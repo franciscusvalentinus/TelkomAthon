@@ -2,6 +2,11 @@ import streamlit as st
 import requests
 import pandas as pd
 import io
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(__file__))
+from export_utils import to_csv, to_xlsx, to_docx, to_pdf
 
 API_BASE = "http://127.0.0.1:8000"
 
@@ -25,10 +30,23 @@ def api_request(method: str, endpoint: str, token: str = None, **kwargs):
         return None
 
 
-def df_to_csv_download(df: pd.DataFrame, filename: str):
-    """Return a download button for a DataFrame as CSV."""
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button(label="⬇️ Download CSV", data=csv, file_name=filename, mime="text/csv")
+def download_buttons(df: pd.DataFrame, basename: str, title: str = "Export"):
+    """Render a row of download buttons for CSV, XLSX, DOCX, PDF."""
+    cols = st.columns(4)
+    with cols[0]:
+        st.download_button("⬇️ CSV", data=to_csv(df),
+                           file_name=f"{basename}.csv", mime="text/csv")
+    with cols[1]:
+        st.download_button("⬇️ XLSX", data=to_xlsx(df),
+                           file_name=f"{basename}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with cols[2]:
+        st.download_button("⬇️ DOCX", data=to_docx(df, title),
+                           file_name=f"{basename}.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with cols[3]:
+        st.download_button("⬇️ PDF", data=to_pdf(df, title),
+                           file_name=f"{basename}.pdf", mime="application/pdf")
 
 
 # ── Session State Init ────────────────────────────────────────────────────────
@@ -139,7 +157,7 @@ def page_syllabus():
             df = pd.DataFrame(result)
             st.success(f"Silabus berhasil dibuat — {len(df)} level")
             st.dataframe(df, use_container_width=True)
-            df_to_csv_download(df, f"silabus_{topic.replace(' ', '_')}.csv")
+            download_buttons(df, f"silabus_{topic.replace(' ', '_')}", title=f"Silabus: {topic}")
         elif resp:
             st.error(resp.json().get("detail", "Gagal generate silabus"))
 
@@ -178,7 +196,7 @@ def page_decompose():
             col1.metric("Total Modul Mikro", len(df))
             col2.metric("Total Durasi", f"{total_dur} menit")
             st.dataframe(df, use_container_width=True)
-            df_to_csv_download(df, f"modul_mikro_{selected_doc.replace(' ', '_')}.csv")
+            download_buttons(df, f"modul_mikro_{selected_doc.replace(' ', '_')}", title=f"Modul Mikro: {selected_doc}")
         elif resp:
             st.error(f"Error {resp.status_code}: {resp.text}")
 
@@ -205,7 +223,7 @@ def page_recommend():
             st.success(f"Rekomendasi untuk {participant}")
             st.metric("Estimasi Total Durasi", f"{total_dur} menit")
             st.dataframe(df, use_container_width=True)
-            df_to_csv_download(df, f"rekomendasi_{participant.replace(' ', '_')}.csv")
+            download_buttons(df, f"rekomendasi_{participant.replace(' ', '_')}", title=f"Rekomendasi: {participant}")
         elif resp:
             st.error(resp.json().get("detail", "Gagal generate rekomendasi"))
 
@@ -229,16 +247,24 @@ def page_history():
                 with st.expander(f"{s['topic']} — {s['level']} ({s['created_at'][:10]})"):
                     df = pd.DataFrame(s["output_json"])
                     st.dataframe(df, use_container_width=True)
-                    df_to_csv_download(df, f"silabus_{s['id'][:8]}.csv")
+                    download_buttons(df, f"silabus_{s['id'][:8]}", title=f"Silabus: {s['topic']}")
         else:
             st.info("Belum ada silabus yang dibuat.")
 
     with tab2:
-        modules = data.get("micro_modules", [])
-        if modules:
-            df = pd.DataFrame(modules)
-            st.dataframe(df, use_container_width=True)
-            df_to_csv_download(df, "semua_modul_mikro.csv")
+        groups = data.get("micro_module_groups", [])
+        if groups:
+            for g in groups:
+                label = f"{g['source_filename']} ({g['date']})"
+                with st.expander(label):
+                    df = pd.DataFrame(g["modules"])
+                    total_dur = df["duration_minutes"].sum() if "duration_minutes" in df.columns else 0
+                    col1, col2 = st.columns(2)
+                    col1.metric("Total Modul Mikro", len(df))
+                    col2.metric("Total Durasi", f"{total_dur} menit")
+                    st.dataframe(df, use_container_width=True)
+                    safe_name = g["source_filename"].replace(" ", "_")[:40]
+                    download_buttons(df, f"modul_mikro_{safe_name}_{g['date']}", title=f"Modul Mikro: {g['source_filename']}")
         else:
             st.info("Belum ada modul mikro yang dibuat.")
 
@@ -250,7 +276,7 @@ def page_history():
                     st.caption(f"Gap: {r['gap_input']}")
                     df = pd.DataFrame(r["recommended_modules"])
                     st.dataframe(df, use_container_width=True)
-                    df_to_csv_download(df, f"rekomendasi_{r['id'][:8]}.csv")
+                    download_buttons(df, f"rekomendasi_{r['id'][:8]}", title=f"Rekomendasi: {r['participant_name']}")
         else:
             st.info("Belum ada rekomendasi yang dibuat.")
 
@@ -261,7 +287,6 @@ if not st.session_state["logged_in"]:
     page_auth()
 else:
     with st.sidebar:
-        st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/9/9f/Telkom_Indonesia_2013.svg/200px-Telkom_Indonesia_2013.svg.png", width=120)
         st.caption(f"👤 {st.session_state['user_email']}")
         st.divider()
         page = st.radio("Navigasi", [

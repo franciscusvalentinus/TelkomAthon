@@ -8,7 +8,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from app.db.database import get_db
-from app.db.models import Syllabus, MicroModule, Recommendation
+from app.db.models import Syllabus, MicroModule, Recommendation, Document
 from app.routers.auth import get_current_user
 from app.routers import auth, upload, syllabus, decompose, recommend
 
@@ -52,19 +52,45 @@ def get_history(
     modules = db.query(MicroModule).filter(MicroModule.user_id == user_id).order_by(MicroModule.created_at.desc()).all()
     recs = db.query(Recommendation).filter(Recommendation.user_id == user_id).order_by(Recommendation.created_at.desc()).all()
 
+    # Build a lookup: document_id → filename
+    doc_ids = list({str(m.source_document_id) for m in modules if m.source_document_id})
+    doc_map = {}
+    if doc_ids:
+        docs = db.query(Document).filter(Document.id.in_(doc_ids)).all()
+        doc_map = {str(d.id): d.filename for d in docs}
+
+    # Group micro_modules by source_document_id + date (session = same doc + same day)
+    from collections import defaultdict
+    groups: dict = defaultdict(list)
+    for m in modules:
+        src_id = str(m.source_document_id) if m.source_document_id else "unknown"
+        date_str = m.created_at.strftime("%Y-%m-%d") if m.created_at else "unknown"
+        key = f"{src_id}||{date_str}"
+        groups[key].append(m)
+
+    micro_module_groups = []
+    for key, mods in groups.items():
+        src_id, date_str = key.split("||", 1)
+        micro_module_groups.append({
+            "source_document_id": src_id,
+            "source_filename": doc_map.get(src_id, "Unknown Document"),
+            "date": date_str,
+            "modules": [
+                {
+                    "id": str(m.id), "title": m.title, "objective": m.objective,
+                    "summary": m.summary, "delivery_format": m.delivery_format,
+                    "duration_minutes": m.duration_minutes,
+                }
+                for m in mods
+            ],
+        })
+
     return {
         "syllabi": [
             {"id": str(s.id), "topic": s.topic, "level": s.level, "output_json": s.output_json, "created_at": s.created_at}
             for s in syllabi
         ],
-        "micro_modules": [
-            {
-                "id": str(m.id), "title": m.title, "objective": m.objective,
-                "summary": m.summary, "delivery_format": m.delivery_format,
-                "duration_minutes": m.duration_minutes, "created_at": m.created_at,
-            }
-            for m in modules
-        ],
+        "micro_module_groups": micro_module_groups,
         "recommendations": [
             {
                 "id": str(r.id), "participant_name": r.participant_name,
