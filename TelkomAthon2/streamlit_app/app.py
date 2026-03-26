@@ -49,6 +49,14 @@ def download_buttons(df: pd.DataFrame, basename: str, title: str = "Export"):
                            file_name=f"{basename}.pdf", mime="application/pdf")
 
 
+def show_table(df: pd.DataFrame):
+    """Display DataFrame with 1-based 'Nomor' index column."""
+    display = df.copy().reset_index(drop=True)
+    display.index = display.index + 1
+    display.index.name = "Nomor"
+    st.dataframe(display, use_container_width=True)
+
+
 def syllabus_download_buttons(final: dict, basename: str):
     """Download buttons khusus silabus — plain text (TXT, DOCX, PDF)."""
     title = f"Silabus: {final.get('course_type', '')} — {final.get('org_profile', {}).get('organization_name', '')}"
@@ -141,7 +149,7 @@ def page_upload():
     if resp and resp.status_code == 200:
         docs = resp.json()
         if docs:
-            st.dataframe(pd.DataFrame(docs), use_container_width=True)
+            show_table(pd.DataFrame(docs))
         else:
             st.info("Belum ada dokumen. Upload dokumen terlebih dahulu.")
 
@@ -171,7 +179,7 @@ def page_syllabus():
     step = st.session_state["syl_step"]
 
     # Progress indicator
-    steps_label = ["1 Profil Org", "2 Tipe Course", "3 TLO", "4 Performance", "5 ELO", "6 Silabus"]
+    steps_label = ["1 Profil", "2 Tipe Course", "3 TLO", "4 Performance", "5 ELO", "6 Silabus"]
     cols_prog = st.columns(len(steps_label))
     for i, label in enumerate(steps_label, start=1):
         with cols_prog[i - 1]:
@@ -183,9 +191,9 @@ def page_syllabus():
                 st.markdown(f"⬜ {label}")
     st.divider()
 
-    # ── STEP 1: Pilih dokumen profil organisasi ───────────────────────────────
+    # ── STEP 1: Pilih dokumen profil perusahaan ───────────────────────────────
     if step == 1:
-        st.subheader("Langkah 1 — Pilih Dokumen Profil Organisasi")
+        st.subheader("Langkah 1 — Pilih Dokumen Profil Perusahaan")
         resp = api_request("get", "/documents", token=token)
         docs = resp.json() if resp and resp.status_code == 200 else []
         doc_options = {d["filename"]: d["document_id"] for d in docs}
@@ -194,14 +202,14 @@ def page_syllabus():
             st.warning("Belum ada dokumen. Upload dokumen terlebih dahulu di menu Upload Dokumen.")
             return
 
-        selected = st.multiselect(
-            "Pilih dokumen profil organisasi (BUS-Profile, katalog, standar kompetensi, dll.)",
+        selected = st.selectbox(
+            "Pilih dokumen profil perusahaan",
             list(doc_options.keys())
         )
-        doc_ids = [doc_options[d] for d in selected]
+        doc_ids = [doc_options[selected]] if selected else []
 
         if st.button("Generate Silabus →", disabled=not selected, type="primary"):
-            with st.spinner("AI sedang membaca dan memahami profil organisasi..."):
+            with st.spinner("AI sedang membaca dan memahami profil perusahaan..."):
                 resp = api_request("post", "/syllabus/analyze-org", token=token,
                                    json={"document_ids": doc_ids})
             if resp and resp.status_code == 200:
@@ -215,12 +223,12 @@ def page_syllabus():
     # ── STEP 2: Tampilkan profil org + pilih tipe course ─────────────────────
     elif step == 2:
         profile = st.session_state["syl_org_profile"]
-        st.subheader("Langkah 2 — Profil Organisasi & Tipe Course")
+        st.subheader("Langkah 2 — Profil Perusahaan & Tipe Course")
 
-        with st.expander("📊 Ringkasan Profil Organisasi", expanded=True):
+        with st.expander("📊 Ringkasan Profil Perusahaan", expanded=True):
             col1, col2 = st.columns(2)
             with col1:
-                st.markdown(f"**Organisasi:** {profile.get('organization_name', '-')}")
+                st.markdown(f"**Perusahaan:** {profile.get('organization_name', '-')}")
                 st.markdown(f"**Industri:** {profile.get('industry', '-')}")
                 st.markdown(f"**Visi:** {profile.get('vision', '-')}")
                 st.markdown(f"**Misi:** {profile.get('mission', '-')}")
@@ -241,8 +249,11 @@ def page_syllabus():
         ordered = recommended + [t for t in all_types if t not in recommended]
 
         course_type = st.selectbox("Tipe Course", ordered)
-        custom = st.text_input("Atau ketik tipe course kustom (opsional)", placeholder="contoh: Agile Project Management")
-        final_course_type = custom.strip() if custom.strip() else course_type
+        if course_type == "Other":
+            custom = st.text_input("Ketik tipe course kustom", placeholder="contoh: Agile Project Management")
+            final_course_type = custom.strip() if custom.strip() else course_type
+        else:
+            final_course_type = course_type
 
         col_back, col_next = st.columns([1, 3])
         with col_back:
@@ -396,7 +407,7 @@ def page_syllabus():
 
         st.success(f"Silabus berhasil dibuat — {course_type}")
 
-        with st.expander("📊 Profil Organisasi", expanded=False):
+        with st.expander("📊 Profil Perusahaan", expanded=False):
             st.markdown(f"**{profile.get('organization_name')}** | {profile.get('industry')}")
             st.markdown(f"**Visi:** {profile.get('vision', '-')}")
             st.markdown(f"**Misi:** {profile.get('mission', '-')}")
@@ -472,7 +483,7 @@ def page_decompose():
             col1, col2 = st.columns(2)
             col1.metric("Total Modul Mikro", len(df))
             col2.metric("Total Durasi", f"{total_dur} menit")
-            st.dataframe(df, use_container_width=True)
+            show_table(df)
             download_buttons(df, f"modul_mikro_{selected_doc.replace(' ', '_')}", title=f"Modul Mikro: {selected_doc}")
         elif resp:
             st.error(f"Error {resp.status_code}: {resp.text}")
@@ -499,7 +510,7 @@ def page_recommend():
             total_dur = df["estimated_duration_minutes"].sum() if "estimated_duration_minutes" in df.columns else 0
             st.success(f"Rekomendasi untuk {participant}")
             st.metric("Estimasi Total Durasi", f"{total_dur} menit")
-            st.dataframe(df, use_container_width=True)
+            show_table(df)
             download_buttons(df, f"rekomendasi_{participant.replace(' ', '_')}", title=f"Rekomendasi: {participant}")
         elif resp:
             st.error(resp.json().get("detail", "Gagal generate rekomendasi"))
@@ -525,7 +536,7 @@ def page_history():
                     output = s["output_json"]
                     if isinstance(output, dict) and "tlos" in output:
                         profile = output.get("org_profile", {})
-                        st.caption(f"Organisasi: {profile.get('organization_name', '-')} | Course: {output.get('course_type', '-')}")
+                        st.caption(f"Perusahaan: {profile.get('organization_name', '-')} | Course: {output.get('course_type', '-')}")
 
                         st.markdown("**Terminal Learning Objectives (TLO)**")
                         for t in output.get("tlos", []):
@@ -546,7 +557,7 @@ def page_history():
                     else:
                         # Legacy flat format
                         df = pd.DataFrame(output) if isinstance(output, list) else pd.DataFrame([output])
-                        st.dataframe(df, use_container_width=True)
+                        show_table(df)
                         download_buttons(df, f"silabus_{s['id'][:8]}", title=f"Silabus: {s['topic']}")
         else:
             st.info("Belum ada silabus yang dibuat.")
@@ -562,7 +573,7 @@ def page_history():
                     col1, col2 = st.columns(2)
                     col1.metric("Total Modul Mikro", len(df))
                     col2.metric("Total Durasi", f"{total_dur} menit")
-                    st.dataframe(df, use_container_width=True)
+                    show_table(df)
                     safe_name = g["source_filename"].replace(" ", "_")[:40]
                     download_buttons(df, f"modul_mikro_{safe_name}_{g['date']}", title=f"Modul Mikro: {g['source_filename']}")
         else:
@@ -575,7 +586,7 @@ def page_history():
                 with st.expander(f"{r['participant_name']} ({r['created_at'][:10]})"):
                     st.caption(f"Gap: {r['gap_input']}")
                     df = pd.DataFrame(r["recommended_modules"])
-                    st.dataframe(df, use_container_width=True)
+                    show_table(df)
                     download_buttons(df, f"rekomendasi_{r['id'][:8]}", title=f"Rekomendasi: {r['participant_name']}")
         else:
             st.info("Belum ada rekomendasi yang dibuat.")

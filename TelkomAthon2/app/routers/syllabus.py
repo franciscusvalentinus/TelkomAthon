@@ -29,7 +29,7 @@ def analyze_org(
 ):
     """Read org profile docs and return a structured summary + context overview."""
     chunks = search_similar_chunks(
-        "profil organisasi visi misi strategi bisnis kompetensi",
+        "profil perusahaan visi misi strategi bisnis kompetensi",
         db, top_k=8, document_ids=req.document_ids
     )
     if not chunks:
@@ -37,22 +37,28 @@ def analyze_org(
 
     context_texts = [c["chunk_text"] for c in chunks]
 
-    system_prompt = """Kamu adalah Learning Strategist untuk Telkom Indonesia.
-Tugasmu adalah membaca dokumen profil organisasi dan menghasilkan ringkasan terstruktur.
+    system_prompt = """Kamu adalah Learning Strategist.
+Tugasmu adalah membaca dokumen profil perusahaan dan menghasilkan ringkasan terstruktur.
+
+ATURAN PENTING dalam menentukan nama perusahaan:
+- Cari entitas yang namanya mengandung kata "PT" (Perseroan Terbatas) — itulah perusahaan utama yang dimaksud.
+- Jika ada beberapa entitas "PT", pilih yang paling sering disebut atau yang menjadi subjek utama dokumen.
+- Abaikan nama lembaga/vendor/mitra lain yang bukan subjek utama dokumen (misalnya nama penyelenggara pelatihan, nama universitas, nama konsultan, dll.).
+- Jika tidak ada entitas "PT", gunakan nama perusahaan yang paling dominan sebagai subjek dokumen.
 
 Format output WAJIB dalam JSON dengan struktur:
 {
-  "organization_name": "nama organisasi",
+  "organization_name": "nama perusahaan (utamakan yang mengandung PT)",
   "industry": "industri/sektor",
-  "vision": "visi organisasi",
-  "mission": "misi organisasi",
+  "vision": "visi perusahaan",
+  "mission": "misi perusahaan",
   "strategic_priorities": ["prioritas strategis 1", "prioritas strategis 2"],
   "core_competencies": ["kompetensi inti 1", "kompetensi inti 2"],
-  "learning_context": "narasi singkat 2-3 kalimat tentang konteks pembelajaran yang relevan untuk organisasi ini",
+  "learning_context": "narasi singkat 2-3 kalimat tentang konteks pembelajaran yang relevan untuk perusahaan ini",
   "recommended_course_types": ["tipe course yang paling relevan berdasarkan profil"]
 }"""
 
-    raw = call_llm(system_prompt, "Analisis profil organisasi berikut dan buat ringkasan terstruktur.", context_texts)
+    raw = call_llm(system_prompt, "Analisis dokumen profil perusahaan berikut. Fokuskan pada perusahaan yang namanya mengandung 'PT' sebagai subjek utama, bukan lembaga penyelenggara atau mitra. Buat ringkasan terstruktur.", context_texts)
 
     import json, re
     cleaned = raw.strip()
@@ -88,34 +94,48 @@ def generate_tlo(
     current_user: dict = Depends(get_current_user),
 ):
     """Generate Terminal Learning Objectives based on course type and org profile."""
-    chunks = search_similar_chunks(req.course_type, db, top_k=5, document_ids=req.document_ids or None)
+    # RAG hanya untuk konteks perusahaan, bukan untuk konten course
+    chunks = search_similar_chunks(
+        f"profil bisnis strategi {req.org_profile.get('industry', '')}",
+        db, top_k=4, document_ids=req.document_ids or None
+    )
     context_texts = [c["chunk_text"] for c in chunks]
 
-    system_prompt = """Kamu adalah Learning Design Expert.
-Tugasmu adalah membuat Terminal Learning Objectives (TLO) untuk sebuah program pelatihan.
+    system_prompt = f"""Kamu adalah Learning Design Expert.
+Tugasmu adalah membuat Terminal Learning Objectives (TLO) untuk program pelatihan bertopik SPESIFIK berikut:
+
+TOPIK COURSE: "{req.course_type}"
+
+TLO WAJIB membahas konten yang berkaitan langsung dengan "{req.course_type}".
+Jangan membuat TLO yang generik atau tidak berkaitan dengan topik tersebut.
 
 TLO adalah pernyataan tingkat tinggi tentang apa yang peserta mampu lakukan setelah menyelesaikan seluruh program.
-Gunakan kata kerja Bloom's Taxonomy level tinggi (menganalisis, mengevaluasi, merancang, dll).
+Gunakan kata kerja Bloom's Taxonomy level tinggi (menganalisis, mengevaluasi, merancang, mengimplementasikan, dll).
 
 Format output WAJIB dalam JSON array:
 [
-  {
+  {{
     "tlo_number": 1,
-    "tlo": "Setelah mengikuti program ini, peserta mampu [kata kerja] [objek] [kondisi/standar]",
-    "rationale": "alasan mengapa TLO ini relevan dengan konteks organisasi"
-  }
+    "tlo": "Setelah mengikuti program ini, peserta mampu [kata kerja] [objek spesifik terkait {req.course_type}] [kondisi/standar]",
+    "rationale": "alasan mengapa TLO ini relevan dengan topik {req.course_type} dan konteks perusahaan"
+  }}
 ]
-Hasilkan 5-7 TLO yang beragam dan relevan."""
+Hasilkan 5-7 TLO yang beragam, spesifik, dan semuanya berkaitan langsung dengan "{req.course_type}"."""
 
     org_summary = (
-        f"Organisasi: {req.org_profile.get('organization_name', '')}\n"
+        f"Perusahaan: {req.org_profile.get('organization_name', '')}\n"
         f"Industri: {req.org_profile.get('industry', '')}\n"
         f"Prioritas Strategis: {', '.join(req.org_profile.get('strategic_priorities', []))}\n"
         f"Kompetensi Inti: {', '.join(req.org_profile.get('core_competencies', []))}\n"
         f"Konteks Pembelajaran: {req.org_profile.get('learning_context', '')}"
     )
 
-    user_message = f"Tipe Course: {req.course_type}\n\nProfil Organisasi:\n{org_summary}\n\nBuatkan TLO yang relevan."
+    user_message = (
+        f"Topik Course yang HARUS menjadi fokus: {req.course_type}\n\n"
+        f"Profil Perusahaan (sebagai konteks):\n{org_summary}\n\n"
+        f"Buatkan TLO yang SPESIFIK untuk topik '{req.course_type}', "
+        f"disesuaikan dengan konteks bisnis perusahaan di atas."
+    )
     raw = call_llm(system_prompt, user_message, context_texts)
 
     try:
@@ -150,28 +170,45 @@ def generate_performance(
 ):
     """Generate Performance Objectives based on selected TLOs."""
     tlo_text = "\n".join(f"- TLO {t['tlo_number']}: {t['tlo']}" for t in req.selected_tlos)
-    chunks = search_similar_chunks(tlo_text[:500], db, top_k=5, document_ids=req.document_ids or None)
+
+    # Ekstrak topik dari TLO untuk query RAG yang lebih relevan
+    chunks = search_similar_chunks(
+        f"profil bisnis strategi {req.org_profile.get('industry', '')}",
+        db, top_k=3, document_ids=req.document_ids or None
+    )
     context_texts = [c["chunk_text"] for c in chunks]
 
-    system_prompt = """Kamu adalah Instructional Designer.
-Tugasmu adalah membuat Performance Objectives berdasarkan Terminal Learning Objectives (TLO) yang diberikan.
+    # Deteksi course type dari TLO pertama untuk memperkuat instruksi
+    first_tlo = req.selected_tlos[0].get("tlo", "") if req.selected_tlos else ""
 
-Performance Objective mendeskripsikan perilaku yang dapat diamati dan diukur.
-Setiap Performance Objective harus memiliki: Perilaku (Behavior), Kondisi (Condition), dan Standar (Standard).
+    system_prompt = f"""Kamu adalah Instructional Designer.
+Tugasmu adalah membuat Performance Objectives berdasarkan TLO yang diberikan.
+
+PENTING: Performance Objectives HARUS spesifik dan berkaitan langsung dengan konten yang ada di TLO.
+Jangan membuat Performance Objective yang generik — setiap PO harus mencerminkan keterampilan/pengetahuan nyata dari topik TLO.
+
+Performance Objective harus memiliki tiga komponen:
+- Perilaku (Behavior): tindakan spesifik yang dapat diamati
+- Kondisi (Condition): situasi/sumber daya yang diberikan
+- Standar (Standard): kriteria keberhasilan yang terukur
 
 Format output WAJIB dalam JSON array:
 [
-  {
+  {{
     "perf_number": 1,
     "related_tlo": "TLO 1",
-    "performance_objective": "Peserta dapat [perilaku spesifik yang dapat diamati]",
-    "condition": "Diberikan [kondisi/sumber daya/situasi]",
-    "standard": "dengan [kriteria keberhasilan yang terukur]"
-  }
+    "performance_objective": "Peserta dapat [perilaku spesifik sesuai topik TLO]",
+    "condition": "Diberikan [kondisi/tools/skenario spesifik]",
+    "standard": "dengan [kriteria terukur yang spesifik]"
+  }}
 ]
-Hasilkan 2-3 Performance Objective per TLO."""
+Hasilkan 2-3 Performance Objective per TLO. Pastikan kontennya spesifik sesuai topik masing-masing TLO."""
 
-    user_message = f"TLO yang dipilih:\n{tlo_text}\n\nBuatkan Performance Objectives yang terukur."
+    user_message = (
+        f"TLO yang dipilih (jadikan dasar konten PO):\n{tlo_text}\n\n"
+        f"Konteks Perusahaan: {req.org_profile.get('organization_name', '')} — {req.org_profile.get('industry', '')}\n\n"
+        f"Buatkan Performance Objectives yang SPESIFIK sesuai konten setiap TLO di atas."
+    )
     raw = call_llm(system_prompt, user_message, context_texts)
 
     try:
@@ -208,33 +245,40 @@ def generate_elo(
 ):
     """Generate Enabling Learning Objectives based on selected TLOs and Performance Objectives."""
     tlo_text = "\n".join(f"- {t['tlo']}" for t in req.selected_tlos)
-    perf_text = "\n".join(f"- {p['performance_objective']}" for p in req.selected_performances)
+    perf_text = "\n".join(f"- PO {p['perf_number']}: {p['performance_objective']}" for p in req.selected_performances)
 
-    chunks = search_similar_chunks(perf_text[:500], db, top_k=5, document_ids=req.document_ids or None)
+    chunks = search_similar_chunks(
+        f"profil bisnis strategi {req.org_profile.get('industry', '')}",
+        db, top_k=3, document_ids=req.document_ids or None
+    )
     context_texts = [c["chunk_text"] for c in chunks]
 
-    system_prompt = """Kamu adalah Instructional Designer spesialis kurikulum.
-Tugasmu adalah membuat Enabling Learning Objectives (ELO) — tujuan pembelajaran pendukung yang membantu peserta mencapai Performance Objectives.
+    system_prompt = f"""Kamu adalah Instructional Designer spesialis kurikulum.
+Tugasmu adalah membuat Enabling Learning Objectives (ELO) yang mendukung pencapaian Performance Objectives.
 
-ELO bersifat lebih spesifik dan granular, fokus pada pengetahuan/keterampilan yang dibutuhkan.
+PENTING: ELO HARUS spesifik dan berkaitan langsung dengan konten Performance Objective yang diberikan.
+ELO adalah unit pembelajaran terkecil — fokus pada satu pengetahuan atau keterampilan spesifik yang dibutuhkan.
+Jangan membuat ELO yang generik atau tidak berkaitan dengan topik PO.
 
 Format output WAJIB dalam JSON array:
 [
-  {
+  {{
     "elo_number": 1,
-    "related_performance": "Performance Objective 1",
-    "elo": "Peserta dapat [kata kerja Bloom] [konten spesifik]",
+    "related_performance": "PO 1",
+    "elo": "Peserta dapat [kata kerja Bloom spesifik] [konten spesifik sesuai topik PO]",
     "bloom_level": "Remember|Understand|Apply|Analyze|Evaluate|Create",
-    "delivery_method": "Video|Reading|Quiz|Case Study|Role Play|Simulation|Workshop",
+    "delivery_method": "Video|Reading|Quiz|Case Study|Role Play|Simulation|Workshop|Hands-on Lab",
     "duration_minutes": 15
-  }
+  }}
 ]
-Hasilkan 2-4 ELO per Performance Objective."""
+Hasilkan 2-4 ELO per Performance Objective. Setiap ELO harus mencerminkan sub-topik nyata dari PO-nya."""
 
     user_message = (
-        f"TLO:\n{tlo_text}\n\n"
-        f"Performance Objectives:\n{perf_text}\n\n"
-        f"Buatkan ELO yang mendukung pencapaian Performance Objectives di atas."
+        f"TLO (konteks program):\n{tlo_text}\n\n"
+        f"Performance Objectives (jadikan dasar konten ELO):\n{perf_text}\n\n"
+        f"Konteks Perusahaan: {req.org_profile.get('organization_name', '')} — {req.org_profile.get('industry', '')}\n\n"
+        f"Buatkan ELO yang SPESIFIK untuk setiap Performance Objective di atas. "
+        f"Pastikan konten ELO mencerminkan sub-topik nyata yang perlu dipelajari."
     )
     raw = call_llm(system_prompt, user_message, context_texts)
 

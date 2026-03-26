@@ -89,7 +89,7 @@ def syllabus_to_text(final: dict) -> str:
     # Org profile
     lines.append("PROFIL ORGANISASI")
     lines.append("-" * 40)
-    lines.append(f"Organisasi  : {profile.get('organization_name', '-')}")
+    lines.append(f"Perusahaan  : {profile.get('organization_name', '-')}")
     lines.append(f"Industri    : {profile.get('industry', '-')}")
     lines.append(f"Visi        : {profile.get('vision', '-')}")
     lines.append(f"Misi        : {profile.get('mission', '-')}")
@@ -165,9 +165,9 @@ def syllabus_to_docx(final: dict, title: str = "Silabus Pelatihan") -> bytes:
     doc.add_heading(title, level=0)
 
     # Org profile section
-    doc.add_heading("Profil Organisasi", level=1)
+    doc.add_heading("Profil Perusahaan", level=1)
     fields = [
-        ("Organisasi", profile.get("organization_name", "-")),
+        ("Perusahaan", profile.get("organization_name", "-")),
         ("Industri", profile.get("industry", "-")),
         ("Visi", profile.get("vision", "-")),
         ("Misi", profile.get("mission", "-")),
@@ -272,8 +272,8 @@ def syllabus_to_pdf(final: dict, title: str = "Silabus Pelatihan") -> bytes:
     add(title, styles["Title"], 0.4)
     hr()
 
-    add("Profil Organisasi", h1, 0.1)
-    add(f"<b>Organisasi:</b> {profile.get('organization_name', '-')}")
+    add("Profil Perusahaan", h1, 0.1)
+    add(f"<b>Perusahaan:</b> {profile.get('organization_name', '-')}")
     add(f"<b>Industri:</b> {profile.get('industry', '-')}")
     add(f"<b>Visi:</b> {profile.get('vision', '-')}")
     add(f"<b>Misi:</b> {profile.get('mission', '-')}")
