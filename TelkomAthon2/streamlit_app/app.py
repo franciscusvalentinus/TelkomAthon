@@ -6,7 +6,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
-from export_utils import to_csv, to_xlsx, to_docx, to_pdf
+from export_utils import to_csv, to_xlsx, to_docx, to_pdf, syllabus_to_text, syllabus_to_docx, syllabus_to_pdf
 
 API_BASE = "http://127.0.0.1:8000"
 
@@ -49,7 +49,20 @@ def download_buttons(df: pd.DataFrame, basename: str, title: str = "Export"):
                            file_name=f"{basename}.pdf", mime="application/pdf")
 
 
-# ── Session State Init ────────────────────────────────────────────────────────
+def syllabus_download_buttons(final: dict, basename: str):
+    """Download buttons khusus silabus — plain text (TXT, DOCX, PDF)."""
+    title = f"Silabus: {final.get('course_type', '')} — {final.get('org_profile', {}).get('organization_name', '')}"
+    cols = st.columns(3)
+    with cols[0]:
+        st.download_button("⬇️ TXT", data=syllabus_to_text(final).encode("utf-8"),
+                           file_name=f"{basename}.txt", mime="text/plain")
+    with cols[1]:
+        st.download_button("⬇️ DOCX", data=syllabus_to_docx(final, title),
+                           file_name=f"{basename}.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with cols[2]:
+        st.download_button("⬇️ PDF", data=syllabus_to_pdf(final, title),
+                           file_name=f"{basename}.pdf", mime="application/pdf")# ── Session State Init ────────────────────────────────────────────────────────
 
 for key, default in [("token", None), ("user_email", ""), ("logged_in", False)]:
     if key not in st.session_state:
@@ -137,29 +150,293 @@ def page_syllabus():
     st.title("📋 Generate Draft Silabus")
     token = st.session_state["token"]
 
-    # Get document list
-    resp = api_request("get", "/documents", token=token)
-    docs = resp.json() if resp and resp.status_code == 200 else []
-    doc_options = {d["filename"]: d["document_id"] for d in docs}
+    # ── Session state keys untuk wizard ──────────────────────────────────────
+    defaults = {
+        "syl_step": 1,
+        "syl_org_profile": None,
+        "syl_doc_ids": [],
+        "syl_course_type": "",
+        "syl_tlos": [],
+        "syl_selected_tlos": [],
+        "syl_performances": [],
+        "syl_selected_perfs": [],
+        "syl_elos": [],
+        "syl_selected_elos": [],
+        "syl_final": None,
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-    topic = st.text_input("Topik Pelatihan", placeholder="contoh: Workflow Optimization")
-    level = st.selectbox("Target Level", ["All Levels", "Beginner", "Intermediate", "Advanced", "Mastery"])
-    selected_docs = st.multiselect("Dokumen Referensi (opsional)", list(doc_options.keys()))
-    doc_ids = [doc_options[d] for d in selected_docs]
+    step = st.session_state["syl_step"]
 
-    if st.button("Generate Silabus", disabled=not topic):
-        with st.spinner("AI sedang menyusun silabus..."):
-            resp = api_request("post", "/syllabus/generate", token=token, json={
-                "topic": topic, "level": level, "document_ids": doc_ids
-            })
-        if resp and resp.status_code == 200:
-            result = resp.json()["result"]
-            df = pd.DataFrame(result)
-            st.success(f"Silabus berhasil dibuat — {len(df)} level")
-            st.dataframe(df, use_container_width=True)
-            download_buttons(df, f"silabus_{topic.replace(' ', '_')}", title=f"Silabus: {topic}")
-        elif resp:
-            st.error(resp.json().get("detail", "Gagal generate silabus"))
+    # Progress indicator
+    steps_label = ["1 Profil Org", "2 Tipe Course", "3 TLO", "4 Performance", "5 ELO", "6 Silabus"]
+    cols_prog = st.columns(len(steps_label))
+    for i, label in enumerate(steps_label, start=1):
+        with cols_prog[i - 1]:
+            if i < step:
+                st.markdown(f"✅ ~~{label}~~")
+            elif i == step:
+                st.markdown(f"**🔵 {label}**")
+            else:
+                st.markdown(f"⬜ {label}")
+    st.divider()
+
+    # ── STEP 1: Pilih dokumen profil organisasi ───────────────────────────────
+    if step == 1:
+        st.subheader("Langkah 1 — Pilih Dokumen Profil Organisasi")
+        resp = api_request("get", "/documents", token=token)
+        docs = resp.json() if resp and resp.status_code == 200 else []
+        doc_options = {d["filename"]: d["document_id"] for d in docs}
+
+        if not doc_options:
+            st.warning("Belum ada dokumen. Upload dokumen terlebih dahulu di menu Upload Dokumen.")
+            return
+
+        selected = st.multiselect(
+            "Pilih dokumen profil organisasi (BUS-Profile, katalog, standar kompetensi, dll.)",
+            list(doc_options.keys())
+        )
+        doc_ids = [doc_options[d] for d in selected]
+
+        if st.button("Generate Silabus →", disabled=not selected, type="primary"):
+            with st.spinner("AI sedang membaca dan memahami profil organisasi..."):
+                resp = api_request("post", "/syllabus/analyze-org", token=token,
+                                   json={"document_ids": doc_ids})
+            if resp and resp.status_code == 200:
+                st.session_state["syl_org_profile"] = resp.json()["org_profile"]
+                st.session_state["syl_doc_ids"] = doc_ids
+                st.session_state["syl_step"] = 2
+                st.rerun()
+            elif resp:
+                st.error(resp.json().get("detail", "Gagal menganalisis dokumen"))
+
+    # ── STEP 2: Tampilkan profil org + pilih tipe course ─────────────────────
+    elif step == 2:
+        profile = st.session_state["syl_org_profile"]
+        st.subheader("Langkah 2 — Profil Organisasi & Tipe Course")
+
+        with st.expander("📊 Ringkasan Profil Organisasi", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**Organisasi:** {profile.get('organization_name', '-')}")
+                st.markdown(f"**Industri:** {profile.get('industry', '-')}")
+                st.markdown(f"**Visi:** {profile.get('vision', '-')}")
+                st.markdown(f"**Misi:** {profile.get('mission', '-')}")
+            with col2:
+                st.markdown("**Prioritas Strategis:**")
+                for p in profile.get("strategic_priorities", []):
+                    st.markdown(f"- {p}")
+                st.markdown("**Kompetensi Inti:**")
+                for c in profile.get("core_competencies", []):
+                    st.markdown(f"- {c}")
+            st.info(f"💡 {profile.get('learning_context', '')}")
+
+        st.subheader("Pilih Jenis Course")
+        recommended = profile.get("recommended_course_types", [])
+        all_types = ["B2B Sales", "Innovation", "Technology", "Leadership", "Operations",
+                     "Customer Experience", "Finance", "HR & People", "Digital Marketing", "Other"]
+        # Merge recommended first
+        ordered = recommended + [t for t in all_types if t not in recommended]
+
+        course_type = st.selectbox("Tipe Course", ordered)
+        custom = st.text_input("Atau ketik tipe course kustom (opsional)", placeholder="contoh: Agile Project Management")
+        final_course_type = custom.strip() if custom.strip() else course_type
+
+        col_back, col_next = st.columns([1, 3])
+        with col_back:
+            if st.button("← Kembali"):
+                st.session_state["syl_step"] = 1
+                st.rerun()
+        with col_next:
+            if st.button("Generate TLO →", type="primary"):
+                with st.spinner("AI sedang membuat Terminal Learning Objectives..."):
+                    resp = api_request("post", "/syllabus/generate-tlo", token=token, json={
+                        "course_type": final_course_type,
+                        "org_profile": profile,
+                        "document_ids": st.session_state["syl_doc_ids"],
+                    })
+                if resp and resp.status_code == 200:
+                    st.session_state["syl_course_type"] = final_course_type
+                    st.session_state["syl_tlos"] = resp.json()["tlos"]
+                    st.session_state["syl_step"] = 3
+                    st.rerun()
+                elif resp:
+                    st.error(resp.json().get("detail", "Gagal generate TLO"))
+
+    # ── STEP 3: Pilih TLO ────────────────────────────────────────────────────
+    elif step == 3:
+        st.subheader("Langkah 3 — Pilih Terminal Learning Objectives (TLO)")
+        st.caption(f"Course: **{st.session_state['syl_course_type']}** | Pilih 1 atau lebih TLO yang paling sesuai")
+
+        tlos = st.session_state["syl_tlos"]
+        selected_indices = []
+        for i, tlo in enumerate(tlos):
+            checked = st.checkbox(
+                f"**TLO {tlo['tlo_number']}** — {tlo['tlo']}",
+                key=f"tlo_check_{i}",
+                value=True
+            )
+            if checked:
+                selected_indices.append(i)
+            with st.container():
+                st.caption(f"📌 Rationale: {tlo['rationale']}")
+
+        col_back, col_next = st.columns([1, 3])
+        with col_back:
+            if st.button("← Kembali"):
+                st.session_state["syl_step"] = 2
+                st.rerun()
+        with col_next:
+            if st.button("Generate Performance Objectives →", disabled=not selected_indices, type="primary"):
+                selected_tlos = [tlos[i] for i in selected_indices]
+                with st.spinner("AI sedang membuat Performance Objectives..."):
+                    resp = api_request("post", "/syllabus/generate-performance", token=token, json={
+                        "selected_tlos": selected_tlos,
+                        "org_profile": st.session_state["syl_org_profile"],
+                        "document_ids": st.session_state["syl_doc_ids"],
+                    })
+                if resp and resp.status_code == 200:
+                    st.session_state["syl_selected_tlos"] = selected_tlos
+                    st.session_state["syl_performances"] = resp.json()["performance_objectives"]
+                    st.session_state["syl_step"] = 4
+                    st.rerun()
+                elif resp:
+                    st.error(resp.json().get("detail", "Gagal generate Performance Objectives"))
+
+    # ── STEP 4: Pilih Performance Objectives ─────────────────────────────────
+    elif step == 4:
+        st.subheader("Langkah 4 — Pilih Performance Objectives")
+        st.caption("Pilih performance objectives yang paling sesuai / mendekati kebutuhan")
+
+        perfs = st.session_state["syl_performances"]
+        selected_indices = []
+        for i, p in enumerate(perfs):
+            checked = st.checkbox(
+                f"**PO {p['perf_number']}** [{p['related_tlo']}] — {p['performance_objective']}",
+                key=f"perf_check_{i}",
+                value=True
+            )
+            if checked:
+                selected_indices.append(i)
+            with st.container():
+                st.caption(f"Kondisi: {p['condition']} | Standar: {p['standard']}")
+
+        col_back, col_next = st.columns([1, 3])
+        with col_back:
+            if st.button("← Kembali"):
+                st.session_state["syl_step"] = 3
+                st.rerun()
+        with col_next:
+            if st.button("Generate ELO →", disabled=not selected_indices, type="primary"):
+                selected_perfs = [perfs[i] for i in selected_indices]
+                with st.spinner("AI sedang membuat Enabling Learning Objectives..."):
+                    resp = api_request("post", "/syllabus/generate-elo", token=token, json={
+                        "selected_tlos": st.session_state["syl_selected_tlos"],
+                        "selected_performances": selected_perfs,
+                        "org_profile": st.session_state["syl_org_profile"],
+                        "document_ids": st.session_state["syl_doc_ids"],
+                    })
+                if resp and resp.status_code == 200:
+                    st.session_state["syl_selected_perfs"] = selected_perfs
+                    st.session_state["syl_elos"] = resp.json()["elos"]
+                    st.session_state["syl_step"] = 5
+                    st.rerun()
+                elif resp:
+                    st.error(resp.json().get("detail", "Gagal generate ELO"))
+
+    # ── STEP 5: Pilih ELO ────────────────────────────────────────────────────
+    elif step == 5:
+        st.subheader("Langkah 5 — Pilih Enabling Learning Objectives (ELO)")
+        st.caption("Pilih ELO yang mendukung pencapaian performance objectives")
+
+        elos = st.session_state["syl_elos"]
+        selected_indices = []
+        for i, e in enumerate(elos):
+            checked = st.checkbox(
+                f"**ELO {e['elo_number']}** [{e['related_performance']}] — {e['elo']}",
+                key=f"elo_check_{i}",
+                value=True
+            )
+            if checked:
+                selected_indices.append(i)
+            with st.container():
+                st.caption(f"Bloom: {e['bloom_level']} | Format: {e['delivery_method']} | Durasi: {e['duration_minutes']} menit")
+
+        col_back, col_next = st.columns([1, 3])
+        with col_back:
+            if st.button("← Kembali"):
+                st.session_state["syl_step"] = 4
+                st.rerun()
+        with col_next:
+            if st.button("Finalisasi Silabus →", disabled=not selected_indices, type="primary"):
+                selected_elos = [elos[i] for i in selected_indices]
+                with st.spinner("AI sedang merangkum dan menyusun dokumen silabus..."):
+                    resp = api_request("post", "/syllabus/finalize", token=token, json={
+                        "course_type": st.session_state["syl_course_type"],
+                        "org_profile": st.session_state["syl_org_profile"],
+                        "selected_tlos": st.session_state["syl_selected_tlos"],
+                        "selected_performances": st.session_state["syl_selected_perfs"],
+                        "selected_elos": selected_elos,
+                    })
+                if resp and resp.status_code == 200:
+                    st.session_state["syl_selected_elos"] = selected_elos
+                    st.session_state["syl_final"] = resp.json()["result"]
+                    st.session_state["syl_step"] = 6
+                    st.rerun()
+                elif resp:
+                    st.error(resp.json().get("detail", "Gagal finalisasi silabus"))
+
+    # ── STEP 6: Tampilkan & export silabus final ──────────────────────────────
+    elif step == 6:
+        final = st.session_state["syl_final"]
+        profile = final["org_profile"]
+        course_type = final["course_type"]
+
+        st.success(f"Silabus berhasil dibuat — {course_type}")
+
+        with st.expander("📊 Profil Organisasi", expanded=False):
+            st.markdown(f"**{profile.get('organization_name')}** | {profile.get('industry')}")
+            st.markdown(f"**Visi:** {profile.get('vision', '-')}")
+            st.markdown(f"**Misi:** {profile.get('mission', '-')}")
+            st.markdown("**Prioritas Strategis:**")
+            for p in profile.get("strategic_priorities", []):
+                st.markdown(f"- {p}")
+            st.markdown("**Kompetensi Inti:**")
+            for c in profile.get("core_competencies", []):
+                st.markdown(f"- {c}")
+            st.info(profile.get("learning_context", ""))
+
+        st.subheader("Terminal Learning Objectives (TLO)")
+        for t in final.get("tlos", []):
+            st.markdown(f"**TLO {t.get('tlo_number', '')}.**  {t.get('tlo', '')}")
+            st.caption(f"Rationale: {t.get('rationale', '')}")
+
+        st.divider()
+        st.subheader("Performance Objectives")
+        for po in final.get("performance_objectives", []):
+            st.markdown(f"**PO {po.get('perf_number', '')}.** [{po.get('related_tlo', '')}]  {po.get('performance_objective', '')}")
+            st.caption(f"Kondisi: {po.get('condition', '')}  |  Standar: {po.get('standard', '')}")
+
+        st.divider()
+        st.subheader("Enabling Learning Objectives (ELO)")
+        total_dur = sum(e.get("duration_minutes", 0) for e in final.get("elos", []))
+        st.metric("Estimasi Total Durasi", f"{total_dur} menit")
+        for e in final.get("elos", []):
+            st.markdown(f"**ELO {e.get('elo_number', '')}.** [{e.get('related_performance', '')}]  {e.get('elo', '')}")
+            st.caption(f"Bloom: {e.get('bloom_level', '')}  |  Metode: {e.get('delivery_method', '')}  |  Durasi: {e.get('duration_minutes', '')} menit")
+
+        st.divider()
+        st.subheader("Export Silabus")
+        safe_name = course_type.replace(" ", "_").replace("/", "-")
+        syllabus_download_buttons(final, f"silabus_{safe_name}")
+
+        st.divider()
+        if st.button("🔄 Buat Silabus Baru", type="secondary"):
+            for k in defaults:
+                st.session_state[k] = defaults[k]
+            st.rerun()
 
 
 def page_decompose():
@@ -245,9 +522,32 @@ def page_history():
         if syllabi:
             for s in syllabi:
                 with st.expander(f"{s['topic']} — {s['level']} ({s['created_at'][:10]})"):
-                    df = pd.DataFrame(s["output_json"])
-                    st.dataframe(df, use_container_width=True)
-                    download_buttons(df, f"silabus_{s['id'][:8]}", title=f"Silabus: {s['topic']}")
+                    output = s["output_json"]
+                    if isinstance(output, dict) and "tlos" in output:
+                        profile = output.get("org_profile", {})
+                        st.caption(f"Organisasi: {profile.get('organization_name', '-')} | Course: {output.get('course_type', '-')}")
+
+                        st.markdown("**Terminal Learning Objectives (TLO)**")
+                        for t in output.get("tlos", []):
+                            st.markdown(f"**TLO {t.get('tlo_number', '')}.**  {t.get('tlo', '')}")
+                            st.caption(f"Rationale: {t.get('rationale', '')}")
+
+                        st.markdown("**Performance Objectives**")
+                        for po in output.get("performance_objectives", []):
+                            st.markdown(f"**PO {po.get('perf_number', '')}.** [{po.get('related_tlo', '')}]  {po.get('performance_objective', '')}")
+                            st.caption(f"Kondisi: {po.get('condition', '')}  |  Standar: {po.get('standard', '')}")
+
+                        st.markdown("**Enabling Learning Objectives (ELO)**")
+                        for e in output.get("elos", []):
+                            st.markdown(f"**ELO {e.get('elo_number', '')}.** [{e.get('related_performance', '')}]  {e.get('elo', '')}")
+                            st.caption(f"Bloom: {e.get('bloom_level', '')}  |  Metode: {e.get('delivery_method', '')}  |  Durasi: {e.get('duration_minutes', '')} menit")
+
+                        syllabus_download_buttons(output, f"silabus_{s['id'][:8]}")
+                    else:
+                        # Legacy flat format
+                        df = pd.DataFrame(output) if isinstance(output, list) else pd.DataFrame([output])
+                        st.dataframe(df, use_container_width=True)
+                        download_buttons(df, f"silabus_{s['id'][:8]}", title=f"Silabus: {s['topic']}")
         else:
             st.info("Belum ada silabus yang dibuat.")
 
