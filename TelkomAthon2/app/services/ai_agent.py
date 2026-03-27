@@ -16,7 +16,7 @@ client = AzureOpenAI(
 DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "corpu-text-gpt-4o")
 
 
-def call_llm(system_prompt: str, user_message: str, context_chunks: List[str] = []) -> str:
+def call_llm(system_prompt: str, user_message: str, context_chunks: List[str] = [], max_tokens: int = 4096) -> str:
     """Call Azure OpenAI GPT-4o with optional RAG context injected into user message."""
     if context_chunks:
         context = "\n\n---\n\n".join(context_chunks)
@@ -31,7 +31,7 @@ def call_llm(system_prompt: str, user_message: str, context_chunks: List[str] = 
             {"role": "user", "content": full_user_msg},
         ],
         temperature=0.3,
-        max_tokens=4096,
+        max_tokens=max_tokens,
     )
     return response.choices[0].message.content
 

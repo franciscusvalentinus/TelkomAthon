@@ -11,8 +11,18 @@ from app.services.ai_agent import call_llm, parse_llm_json
 
 router = APIRouter(tags=["syllabus"])
 
-COURSE_TYPES = ["B2B Sales", "Innovation", "Technology", "Leadership", "Operations",
-                "Customer Experience", "Finance", "HR & People", "Digital Marketing", "Other"]
+LEVEL_MAP = {
+    1: "Intro",
+    2: "Beginner",
+    3: "Intermediate",
+    4: "Advanced",
+    5: "Mastery",
+}
+
+
+def levels_description(start_level: int) -> str:
+    levels = [f"Level {l} ({LEVEL_MAP[l]})" for l in range(start_level, 6)]
+    return ", ".join(levels)
 
 
 # ── Step 1: Analyze org profile ───────────────────────────────────────────────
@@ -73,12 +83,66 @@ Format output WAJIB dalam JSON dengan struktur:
     return {"org_profile": result}
 
 
+# ── Step 1b: Analyze org from manual input (no document) ─────────────────────
+
+class AnalyzeOrgManualRequest(BaseModel):
+    company_name: str
+    industry: str
+
+
+@router.post("/syllabus/analyze-org-manual")
+def analyze_org_manual(
+    req: AnalyzeOrgManualRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Generate org profile from company name + industry using LLM knowledge."""
+    system_prompt = """Kamu adalah Learning Strategist yang berpengalaman.
+Tugasmu adalah menyusun profil perusahaan berdasarkan nama dan industri yang diberikan.
+Gunakan pengetahuanmu tentang industri tersebut untuk mengisi detail yang relevan.
+
+Format output WAJIB dalam JSON:
+{
+  "organization_name": "nama perusahaan persis seperti yang diberikan",
+  "industry": "industri/sektor",
+  "vision": "contoh visi yang umum dan relevan untuk perusahaan di industri ini",
+  "mission": "contoh misi yang umum dan relevan untuk perusahaan di industri ini",
+  "strategic_priorities": ["prioritas strategis yang umum di industri ini", "..."],
+  "core_competencies": ["kompetensi inti yang umumnya dibutuhkan di industri ini", "..."],
+  "learning_context": "narasi singkat 2-3 kalimat tentang konteks pembelajaran yang relevan untuk perusahaan di industri ini",
+  "recommended_course_types": ["tipe course yang paling relevan untuk industri ini"]
+}
+Catatan: Tandai bahwa profil ini dibuat berdasarkan inferensi industri, bukan dokumen resmi."""
+
+    user_message = (
+        f"Nama Perusahaan: {req.company_name}\n"
+        f"Industri: {req.industry}\n\n"
+        f"Susunkan profil perusahaan yang relevan berdasarkan nama dan industri di atas."
+    )
+
+    raw = call_llm(system_prompt, user_message)
+
+    import json, re
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
+        cleaned = re.sub(r"\n?```$", "", cleaned)
+    try:
+        result = json.loads(cleaned)
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"Gagal memparse respons AI: {raw[:300]}")
+
+    return {"org_profile": result}
+
+
 # ── Step 2: Generate TLOs ─────────────────────────────────────────────────────
 
 class GenerateTLORequest(BaseModel):
     course_type: str
     org_profile: dict
     document_ids: List[str] = []
+    start_level: int = 1
+    current_condition: str = ""
+    desired_condition: str = ""
 
 
 class TLOItem(BaseModel):
@@ -101,16 +165,31 @@ def generate_tlo(
     )
     context_texts = [c["chunk_text"] for c in chunks]
 
+    levels_desc = levels_description(req.start_level)
+    level_count = 6 - req.start_level  # jumlah level yang akan dicakup
+
+    condition_context = ""
+    if req.current_condition or req.desired_condition:
+        condition_context = f"""
+KONTEKS KONDISI PESERTA:
+- Kondisi Saat Ini: {req.current_condition or 'tidak disebutkan'}
+- Kondisi yang Diinginkan: {req.desired_condition or 'tidak disebutkan'}
+
+TLO harus menjembatani gap antara kondisi saat ini dan kondisi yang diinginkan."""
+
     system_prompt = f"""Kamu adalah Learning Design Expert.
 Tugasmu adalah membuat Terminal Learning Objectives (TLO) untuk program pelatihan bertopik SPESIFIK berikut:
 
 TOPIK COURSE: "{req.course_type}"
-
+LEVEL YANG DICAKUP: {levels_desc}
+{condition_context}
 TLO WAJIB membahas konten yang berkaitan langsung dengan "{req.course_type}".
+TLO harus mencerminkan progression dari {LEVEL_MAP[req.start_level]} hingga Mastery.
+Setiap TLO harus menunjukkan kedalaman yang berbeda sesuai levelnya.
 Jangan membuat TLO yang generik atau tidak berkaitan dengan topik tersebut.
 
 TLO adalah pernyataan tingkat tinggi tentang apa yang peserta mampu lakukan setelah menyelesaikan seluruh program.
-Gunakan kata kerja Bloom's Taxonomy level tinggi (menganalisis, mengevaluasi, merancang, mengimplementasikan, dll).
+Gunakan kata kerja Bloom's Taxonomy yang sesuai dengan level masing-masing.
 
 Format output WAJIB dalam JSON array:
 [
@@ -120,7 +199,8 @@ Format output WAJIB dalam JSON array:
     "rationale": "alasan mengapa TLO ini relevan dengan topik {req.course_type} dan konteks perusahaan"
   }}
 ]
-Hasilkan 5-7 TLO yang beragam, spesifik, dan semuanya berkaitan langsung dengan "{req.course_type}"."""
+Hasilkan {max(5, level_count * 2)} TLO yang beragam, spesifik, dan semuanya berkaitan langsung dengan "{req.course_type}".
+Pastikan ada TLO yang mencerminkan setiap level: {levels_desc}."""
 
     org_summary = (
         f"Perusahaan: {req.org_profile.get('organization_name', '')}\n"
@@ -131,10 +211,18 @@ Hasilkan 5-7 TLO yang beragam, spesifik, dan semuanya berkaitan langsung dengan 
     )
 
     user_message = (
-        f"Topik Course yang HARUS menjadi fokus: {req.course_type}\n\n"
+        f"Topik Course yang HARUS menjadi fokus: {req.course_type}\n"
+        f"Level yang dicakup: {levels_desc}\n\n"
         f"Profil Perusahaan (sebagai konteks):\n{org_summary}\n\n"
+    )
+    if req.current_condition:
+        user_message += f"Kondisi Saat Ini (masalah/kendala peserta):\n{req.current_condition}\n\n"
+    if req.desired_condition:
+        user_message += f"Kondisi yang Diinginkan (target setelah pelatihan):\n{req.desired_condition}\n\n"
+    user_message += (
         f"Buatkan TLO yang SPESIFIK untuk topik '{req.course_type}', "
-        f"disesuaikan dengan konteks bisnis perusahaan di atas."
+        f"mencerminkan progression dari {LEVEL_MAP[req.start_level]} hingga Mastery, "
+        f"disesuaikan dengan konteks bisnis perusahaan dan kondisi peserta di atas."
     )
     raw = call_llm(system_prompt, user_message, context_texts)
 
@@ -152,6 +240,7 @@ class GeneratePerfRequest(BaseModel):
     selected_tlos: List[dict]
     org_profile: dict
     document_ids: List[str] = []
+    start_level: int = 1
 
 
 class PerfItem(BaseModel):
@@ -181,11 +270,16 @@ def generate_performance(
     # Deteksi course type dari TLO pertama untuk memperkuat instruksi
     first_tlo = req.selected_tlos[0].get("tlo", "") if req.selected_tlos else ""
 
+    levels_desc = levels_description(req.start_level)
+
     system_prompt = f"""Kamu adalah Instructional Designer.
 Tugasmu adalah membuat Performance Objectives berdasarkan TLO yang diberikan.
 
+LEVEL YANG DICAKUP: {levels_desc}
+
 PENTING: Performance Objectives HARUS spesifik dan berkaitan langsung dengan konten yang ada di TLO.
-Jangan membuat Performance Objective yang generik — setiap PO harus mencerminkan keterampilan/pengetahuan nyata dari topik TLO.
+Setiap PO harus mencerminkan tingkat kesulitan yang sesuai dengan levelnya — dari {LEVEL_MAP[req.start_level]} hingga Mastery.
+Jangan membuat Performance Objective yang generik.
 
 Performance Objective harus memiliki tiga komponen:
 - Perilaku (Behavior): tindakan spesifik yang dapat diamati
@@ -202,7 +296,7 @@ Format output WAJIB dalam JSON array:
     "standard": "dengan [kriteria terukur yang spesifik]"
   }}
 ]
-Hasilkan 2-3 Performance Objective per TLO. Pastikan kontennya spesifik sesuai topik masing-masing TLO."""
+Hasilkan 2-3 Performance Objective per TLO. Pastikan ada variasi tingkat kesulitan sesuai level: {levels_desc}."""
 
     user_message = (
         f"TLO yang dipilih (jadikan dasar konten PO):\n{tlo_text}\n\n"
@@ -226,6 +320,7 @@ class GenerateELORequest(BaseModel):
     selected_performances: List[dict]
     org_profile: dict
     document_ids: List[str] = []
+    start_level: int = 1
 
 
 class ELOItem(BaseModel):
@@ -253,25 +348,34 @@ def generate_elo(
     )
     context_texts = [c["chunk_text"] for c in chunks]
 
+    levels_desc = levels_description(req.start_level)
+
     system_prompt = f"""Kamu adalah Instructional Designer spesialis kurikulum.
 Tugasmu adalah membuat Enabling Learning Objectives (ELO) yang mendukung pencapaian Performance Objectives.
 
+LEVEL YANG DICAKUP: {levels_desc}
+
 PENTING: ELO HARUS spesifik dan berkaitan langsung dengan konten Performance Objective yang diberikan.
-ELO adalah unit pembelajaran terkecil — fokus pada satu pengetahuan atau keterampilan spesifik yang dibutuhkan.
-Jangan membuat ELO yang generik atau tidak berkaitan dengan topik PO.
+ELO adalah unit pembelajaran terkecil — fokus pada satu pengetahuan atau keterampilan spesifik.
+Gunakan kata kerja Bloom's Taxonomy yang sesuai dengan level masing-masing:
+- {LEVEL_MAP[1]}/Intro: Remember, Understand
+- Beginner: Understand, Apply
+- Intermediate: Apply, Analyze
+- Advanced: Analyze, Evaluate
+- Mastery: Evaluate, Create
 
 Format output WAJIB dalam JSON array:
 [
   {{
     "elo_number": 1,
     "related_performance": "PO 1",
-    "elo": "Peserta dapat [kata kerja Bloom spesifik] [konten spesifik sesuai topik PO]",
+    "elo": "Peserta dapat [kata kerja Bloom sesuai level] [konten spesifik sesuai topik PO]",
     "bloom_level": "Remember|Understand|Apply|Analyze|Evaluate|Create",
     "delivery_method": "Video|Reading|Quiz|Case Study|Role Play|Simulation|Workshop|Hands-on Lab",
     "duration_minutes": 15
   }}
 ]
-Hasilkan 2-4 ELO per Performance Objective. Setiap ELO harus mencerminkan sub-topik nyata dari PO-nya."""
+Hasilkan 2-4 ELO per Performance Objective. Pastikan ada variasi Bloom level sesuai level: {levels_desc}."""
 
     user_message = (
         f"TLO (konteks program):\n{tlo_text}\n\n"
@@ -298,6 +402,9 @@ class FinalizeRequest(BaseModel):
     selected_tlos: List[dict]
     selected_performances: List[dict]
     selected_elos: List[dict]
+    start_level: int = 1
+    current_condition: str = ""
+    desired_condition: str = ""
 
 
 @router.post("/syllabus/finalize")
@@ -312,6 +419,10 @@ def finalize_syllabus(
     output = {
         "org_profile": req.org_profile,
         "course_type": req.course_type,
+        "start_level": req.start_level,
+        "levels_covered": [f"Level {l} — {LEVEL_MAP[l]}" for l in range(req.start_level, 6)],
+        "current_condition": req.current_condition,
+        "desired_condition": req.desired_condition,
         "tlos": req.selected_tlos,
         "performance_objectives": req.selected_performances,
         "elos": req.selected_elos,

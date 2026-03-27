@@ -6,7 +6,14 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(__file__))
-from export_utils import to_csv, to_xlsx, to_docx, to_pdf, syllabus_to_text, syllabus_to_docx, syllabus_to_pdf
+from export_utils import (to_csv, to_xlsx, to_docx, to_pdf,
+                          syllabus_to_text, syllabus_to_docx, syllabus_to_pdf,
+                          decompose_to_text, decompose_to_docx, decompose_to_pdf,
+                          recommend_to_text, recommend_to_docx, recommend_to_pdf,
+                          combined_to_docx, combined_to_pdf, combined_to_text,
+                          build_timeline, timeline_to_df,
+                          decompose_manual_to_docx, decompose_manual_to_pdf,
+                          decompose_manual_to_text)
 
 API_BASE = "http://127.0.0.1:8000"
 
@@ -50,10 +57,10 @@ def download_buttons(df: pd.DataFrame, basename: str, title: str = "Export"):
 
 
 def show_table(df: pd.DataFrame):
-    """Display DataFrame with 1-based 'Nomor' index column."""
+    """Display DataFrame with 1-based 'nomor' index column."""
     display = df.copy().reset_index(drop=True)
     display.index = display.index + 1
-    display.index.name = "Nomor"
+    display.index.name = "nomor"
     st.dataframe(display, use_container_width=True)
 
 
@@ -70,6 +77,36 @@ def syllabus_download_buttons(final: dict, basename: str):
                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     with cols[2]:
         st.download_button("⬇️ PDF", data=syllabus_to_pdf(final, title),
+                           file_name=f"{basename}.pdf", mime="application/pdf")
+
+
+def decompose_download_buttons(modules: list, basename: str, source_name: str = ""):
+    """Download buttons untuk dekomposisi modul — plain text (TXT, DOCX, PDF)."""
+    cols = st.columns(3)
+    with cols[0]:
+        st.download_button("⬇️ TXT", data=decompose_to_text(modules, source_name).encode("utf-8"),
+                           file_name=f"{basename}.txt", mime="text/plain")
+    with cols[1]:
+        st.download_button("⬇️ DOCX", data=decompose_to_docx(modules, source_name),
+                           file_name=f"{basename}.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with cols[2]:
+        st.download_button("⬇️ PDF", data=decompose_to_pdf(modules, source_name),
+                           file_name=f"{basename}.pdf", mime="application/pdf")
+
+
+def recommend_download_buttons(recs: list, basename: str, participant: str = "", gap: str = ""):
+    """Download buttons untuk rekomendasi — plain text (TXT, DOCX, PDF)."""
+    cols = st.columns(3)
+    with cols[0]:
+        st.download_button("⬇️ TXT", data=recommend_to_text(recs, participant, gap).encode("utf-8"),
+                           file_name=f"{basename}.txt", mime="text/plain")
+    with cols[1]:
+        st.download_button("⬇️ DOCX", data=recommend_to_docx(recs, participant, gap),
+                           file_name=f"{basename}.docx",
+                           mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    with cols[2]:
+        st.download_button("⬇️ PDF", data=recommend_to_pdf(recs, participant, gap),
                            file_name=f"{basename}.pdf", mime="application/pdf")# ── Session State Init ────────────────────────────────────────────────────────
 
 for key, default in [("token", None), ("user_email", ""), ("logged_in", False)]:
@@ -164,6 +201,9 @@ def page_syllabus():
         "syl_org_profile": None,
         "syl_doc_ids": [],
         "syl_course_type": "",
+        "syl_start_level": 1,
+        "syl_current_condition": "",
+        "syl_desired_condition": "",
         "syl_tlos": [],
         "syl_selected_tlos": [],
         "syl_performances": [],
@@ -193,32 +233,56 @@ def page_syllabus():
 
     # ── STEP 1: Pilih dokumen profil perusahaan ───────────────────────────────
     if step == 1:
-        st.subheader("Langkah 1 — Pilih Dokumen Profil Perusahaan")
-        resp = api_request("get", "/documents", token=token)
-        docs = resp.json() if resp and resp.status_code == 200 else []
-        doc_options = {d["filename"]: d["document_id"] for d in docs}
+        st.subheader("Langkah 1 — Profil Perusahaan")
 
-        if not doc_options:
-            st.warning("Belum ada dokumen. Upload dokumen terlebih dahulu di menu Upload Dokumen.")
-            return
-
-        selected = st.selectbox(
-            "Pilih dokumen profil perusahaan",
-            list(doc_options.keys())
+        input_mode = st.radio(
+            "Sumber profil perusahaan",
+            ["📄 Upload dokumen profil", "✏️ Tidak ada profil perusahaan?"],
+            horizontal=True,
         )
-        doc_ids = [doc_options[selected]] if selected else []
 
-        if st.button("Generate Silabus →", disabled=not selected, type="primary"):
-            with st.spinner("AI sedang membaca dan memahami profil perusahaan..."):
-                resp = api_request("post", "/syllabus/analyze-org", token=token,
-                                   json={"document_ids": doc_ids})
-            if resp and resp.status_code == 200:
-                st.session_state["syl_org_profile"] = resp.json()["org_profile"]
-                st.session_state["syl_doc_ids"] = doc_ids
-                st.session_state["syl_step"] = 2
-                st.rerun()
-            elif resp:
-                st.error(resp.json().get("detail", "Gagal menganalisis dokumen"))
+        if input_mode == "📄 Upload dokumen profil":
+            resp = api_request("get", "/documents", token=token)
+            docs = resp.json() if resp and resp.status_code == 200 else []
+            doc_options = {d["filename"]: d["document_id"] for d in docs}
+
+            if not doc_options:
+                st.warning("Belum ada dokumen. Upload dokumen terlebih dahulu di menu Upload Dokumen.")
+                return
+
+            selected = st.selectbox("Pilih dokumen profil perusahaan", list(doc_options.keys()))
+            doc_ids = [doc_options[selected]] if selected else []
+
+            if st.button("Generate Silabus →", disabled=not selected, type="primary"):
+                with st.spinner("AI sedang membaca dan memahami profil perusahaan..."):
+                    resp = api_request("post", "/syllabus/analyze-org", token=token,
+                                       json={"document_ids": doc_ids})
+                if resp and resp.status_code == 200:
+                    st.session_state["syl_org_profile"] = resp.json()["org_profile"]
+                    st.session_state["syl_doc_ids"] = doc_ids
+                    st.session_state["syl_step"] = 2
+                    st.rerun()
+                elif resp:
+                    st.error(resp.json().get("detail", "Gagal menganalisis dokumen"))
+
+        else:  # Manual input
+            st.info("Masukkan nama dan industri perusahaan. AI akan membantu melengkapi profil secara otomatis.")
+            company_name = st.text_input("Nama Perusahaan", placeholder="contoh: PT Cahaya Langit")
+            industry = st.text_input("Industri / Sektor", placeholder="contoh: Teknologi Informasi, Perbankan, Manufaktur")
+
+            can_submit = bool(company_name.strip() and industry.strip())
+            if st.button("Generate Silabus →", disabled=not can_submit, type="primary"):
+                with st.spinner("AI sedang menyusun profil perusahaan..."):
+                    resp = api_request("post", "/syllabus/analyze-org-manual", token=token,
+                                       json={"company_name": company_name.strip(),
+                                             "industry": industry.strip()})
+                if resp and resp.status_code == 200:
+                    st.session_state["syl_org_profile"] = resp.json()["org_profile"]
+                    st.session_state["syl_doc_ids"] = []
+                    st.session_state["syl_step"] = 2
+                    st.rerun()
+                elif resp:
+                    st.error(resp.json().get("detail", "Gagal menyusun profil perusahaan"))
 
     # ── STEP 2: Tampilkan profil org + pilih tipe course ─────────────────────
     elif step == 2:
@@ -255,6 +319,34 @@ def page_syllabus():
         else:
             final_course_type = course_type
 
+        level_labels = {
+            1: "Level 1 — Intro",
+            2: "Level 2 — Beginner",
+            3: "Level 3 — Intermediate",
+            4: "Level 4 — Advanced",
+            5: "Level 5 — Mastery",
+        }
+        start_level = st.selectbox(
+            "Level Awal Peserta",
+            options=list(level_labels.keys()),
+            format_func=lambda x: level_labels[x],
+            help="Silabus akan mencakup dari level yang dipilih hingga Level 5 — Mastery"
+        )
+        active_levels = list(range(start_level, 6))
+        st.caption(f"Silabus akan mencakup: {', '.join(level_labels[l] for l in active_levels)}")
+
+        with st.expander("📝 Konteks Pelatihan (opsional)", expanded=False):
+            current_condition = st.text_area(
+                "Kondisi Saat Ini",
+                placeholder="contoh: Tim sales belum memahami teknik consultative selling, konversi deal masih rendah, dan kurang percaya diri saat presentasi ke klien enterprise.",
+                help="Deskripsikan kendala atau masalah yang sedang dihadapi peserta / perusahaan saat ini"
+            )
+            desired_condition = st.text_area(
+                "Kondisi yang Diinginkan",
+                placeholder="contoh: Tim sales mampu melakukan discovery call yang efektif, membangun rapport dengan klien, dan menutup deal dengan win rate minimal 30%.",
+                help="Deskripsikan target atau hasil yang ingin dicapai setelah pelatihan"
+            )
+
         col_back, col_next = st.columns([1, 3])
         with col_back:
             if st.button("← Kembali"):
@@ -267,9 +359,15 @@ def page_syllabus():
                         "course_type": final_course_type,
                         "org_profile": profile,
                         "document_ids": st.session_state["syl_doc_ids"],
+                        "start_level": start_level,
+                        "current_condition": current_condition.strip(),
+                        "desired_condition": desired_condition.strip(),
                     })
                 if resp and resp.status_code == 200:
                     st.session_state["syl_course_type"] = final_course_type
+                    st.session_state["syl_start_level"] = start_level
+                    st.session_state["syl_current_condition"] = current_condition.strip()
+                    st.session_state["syl_desired_condition"] = desired_condition.strip()
                     st.session_state["syl_tlos"] = resp.json()["tlos"]
                     st.session_state["syl_step"] = 3
                     st.rerun()
@@ -307,6 +405,7 @@ def page_syllabus():
                         "selected_tlos": selected_tlos,
                         "org_profile": st.session_state["syl_org_profile"],
                         "document_ids": st.session_state["syl_doc_ids"],
+                        "start_level": st.session_state["syl_start_level"],
                     })
                 if resp and resp.status_code == 200:
                     st.session_state["syl_selected_tlos"] = selected_tlos
@@ -348,6 +447,7 @@ def page_syllabus():
                         "selected_performances": selected_perfs,
                         "org_profile": st.session_state["syl_org_profile"],
                         "document_ids": st.session_state["syl_doc_ids"],
+                        "start_level": st.session_state["syl_start_level"],
                     })
                 if resp and resp.status_code == 200:
                     st.session_state["syl_selected_perfs"] = selected_perfs
@@ -390,6 +490,9 @@ def page_syllabus():
                         "selected_tlos": st.session_state["syl_selected_tlos"],
                         "selected_performances": st.session_state["syl_selected_perfs"],
                         "selected_elos": selected_elos,
+                        "start_level": st.session_state["syl_start_level"],
+                        "current_condition": st.session_state["syl_current_condition"],
+                        "desired_condition": st.session_state["syl_desired_condition"],
                     })
                 if resp and resp.status_code == 200:
                     st.session_state["syl_selected_elos"] = selected_elos
@@ -407,6 +510,11 @@ def page_syllabus():
 
         st.success(f"Silabus berhasil dibuat — {course_type}")
 
+        level_labels = {1: "Intro", 2: "Beginner", 3: "Intermediate", 4: "Advanced", 5: "Mastery"}
+        start_level = final.get("start_level", 1)
+        active_levels = [f"Level {l} — {level_labels[l]}" for l in range(start_level, 6)]
+        st.caption(f"Level: {' → '.join(active_levels)}")
+
         with st.expander("📊 Profil Perusahaan", expanded=False):
             st.markdown(f"**{profile.get('organization_name')}** | {profile.get('industry')}")
             st.markdown(f"**Visi:** {profile.get('vision', '-')}")
@@ -418,6 +526,13 @@ def page_syllabus():
             for c in profile.get("core_competencies", []):
                 st.markdown(f"- {c}")
             st.info(profile.get("learning_context", ""))
+
+        if final.get("current_condition") or final.get("desired_condition"):
+            with st.expander("📋 Konteks Pelatihan", expanded=False):
+                if final.get("current_condition"):
+                    st.markdown(f"**Kondisi Saat Ini:** {final['current_condition']}")
+                if final.get("desired_condition"):
+                    st.markdown(f"**Kondisi yang Diinginkan:** {final['desired_condition']}")
 
         st.subheader("Terminal Learning Objectives (TLO)")
         for t in final.get("tlos", []):
@@ -450,6 +565,99 @@ def page_syllabus():
             st.rerun()
 
 
+def _render_decompose_result(modules: list, guide_id: str, syllabus_data: dict | None, safe_name: str, manual_meta: dict | None = None):
+    """Render hasil dekomposisi modul dan tombol export."""
+    total_dur = sum(m.get("duration_minutes", 0) for m in modules)
+
+    # Tampilkan ringkasan profil untuk mode tanpa silabus
+    if manual_meta:
+        profile = manual_meta.get("org_profile", {})
+        course_type_disp = manual_meta.get("course_type", safe_name)
+        levels_disp = manual_meta.get("levels_covered", [])
+        with st.expander("📊 Profil Perusahaan & Course", expanded=True):
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**Perusahaan:** {profile.get('organization_name', '-')}")
+                st.markdown(f"**Industri:** {profile.get('industry', '-')}")
+                st.markdown(f"**Visi:** {profile.get('vision', '-')}")
+                st.markdown(f"**Misi:** {profile.get('mission', '-')}")
+            with col2:
+                st.markdown(f"**Tipe Course:** {course_type_disp}")
+                st.markdown(f"**Level:** {' → '.join(levels_disp) if levels_disp else '-'}")
+                if profile.get("strategic_priorities"):
+                    st.markdown("**Prioritas Strategis:**")
+                    for p in profile["strategic_priorities"]:
+                        st.markdown(f"- {p}")
+            if profile.get("learning_context"):
+                st.info(profile["learning_context"])
+
+    col1, col2 = st.columns(2)
+    col1.metric("Total Modul Mikro", len(modules))
+    col2.metric("Total Durasi", f"{total_dur} menit")
+    st.divider()
+
+    for m in modules:
+        st.markdown(f"**Modul {m.get('module_number', '')}. {m.get('title', '')}**")
+        st.caption(
+            f"Format: {m.get('delivery_format', '')}  |  Durasi: {m.get('duration_minutes', '')} menit"
+            + (f"  |  Berdasarkan: {m.get('related_elo', '')}" if m.get("related_elo") else "")
+        )
+        st.markdown(f"**Tujuan:** {m.get('specific_objective', '')}")
+        st.markdown(f"**Ringkasan:** {m.get('content_summary', '')}")
+        st.divider()
+
+    st.subheader("📅 Timeline Penyelesaian Modul")
+    timeline = build_timeline(modules)
+
+    tab_short, tab_long = st.tabs(["⚡ Versi Singkat (2 Modul/Minggu)", "🗓️ Versi Lama (1 Modul/Minggu)"])
+    with tab_short:
+        df_short = timeline_to_df(timeline["short"])
+        show_table(df_short)
+    with tab_long:
+        df_long = timeline_to_df(timeline["long"])
+        show_table(df_long)
+
+    st.subheader("Export")
+    safe = safe_name.replace(" ", "_").replace("/", "-")
+
+    if syllabus_data:
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            st.download_button("⬇️ DOCX (Silabus + Modul)",
+                               data=combined_to_docx(syllabus_data, modules),
+                               file_name=f"silabus_modul_{safe}.docx",
+                               mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        with col_b:
+            st.download_button("⬇️ PDF (Silabus + Modul)",
+                               data=combined_to_pdf(syllabus_data, modules),
+                               file_name=f"silabus_modul_{safe}.pdf",
+                               mime="application/pdf")
+        with col_c:
+            st.download_button("⬇️ TXT (Silabus + Modul)",
+                               data=combined_to_text(syllabus_data, modules).encode("utf-8"),
+                               file_name=f"silabus_modul_{safe}.txt",
+                               mime="text/plain")
+    else:
+        if manual_meta:
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.download_button("⬇️ DOCX (Profil + Modul)",
+                                   data=decompose_manual_to_docx(modules, manual_meta),
+                                   file_name=f"modul_mikro_{safe}.docx",
+                                   mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            with col_b:
+                st.download_button("⬇️ PDF (Profil + Modul)",
+                                   data=decompose_manual_to_pdf(modules, manual_meta),
+                                   file_name=f"modul_mikro_{safe}.pdf",
+                                   mime="application/pdf")
+            with col_c:
+                st.download_button("⬇️ TXT (Profil + Modul)",
+                                   data=decompose_manual_to_text(modules, manual_meta).encode("utf-8"),
+                                   file_name=f"modul_mikro_{safe}.txt",
+                                   mime="text/plain")
+        else:
+            decompose_download_buttons(modules, f"modul_mikro_{safe}", source_name=safe_name)
+
 def page_decompose():
     st.title("🔬 Dekomposisi Modul Mikro")
     token = st.session_state.get("token")
@@ -457,36 +665,142 @@ def page_decompose():
         st.error("Sesi tidak valid. Silakan logout dan login ulang.")
         return
 
-    resp = api_request("get", "/documents", token=token)
-    docs = resp.json() if resp and resp.status_code == 200 else []
+    # ── Panduan microlearning (wajib, shared untuk kedua mode) ───────────────
+    resp_docs = api_request("get", "/documents", token=token)
+    docs = resp_docs.json() if resp_docs and resp_docs.status_code == 200 else []
     doc_options = {d["filename"]: d["document_id"] for d in docs}
 
-    if not doc_options:
-        st.warning("Upload dokumen terlebih dahulu.")
-        return
+    col_guide, col_template = st.columns([3, 1])
+    with col_guide:
+        guide_doc = st.selectbox(
+            "Panduan Microlearning",
+            ["— Pilih panduan —"] + list(doc_options.keys()),
+            help="Upload dan pilih dokumen panduan microlearning sebagai acuan format modul"
+        )
+    with col_template:
+        st.markdown("<br>", unsafe_allow_html=True)
+        template_path = os.path.join(os.path.dirname(__file__), "template_microlearning.docx")
+        if os.path.exists(template_path):
+            with open(template_path, "rb") as f:
+                st.download_button(
+                    "📥 Download Template",
+                    data=f.read(),
+                    file_name="template_microlearning.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
 
-    selected_doc = st.selectbox("Pilih Modul Pelatihan", list(doc_options.keys()))
-    guide_doc = st.selectbox("Panduan Microlearning (opsional)", ["— Tidak ada —"] + list(doc_options.keys()))
-    guide_id = doc_options.get(guide_doc) if guide_doc != "— Tidak ada —" else None
+    guide_id = doc_options.get(guide_doc) if guide_doc != "— Pilih panduan —" else None
+    guide_selected = guide_id is not None
+    if not guide_selected:
+        st.caption("⚠️ Pilih dokumen panduan microlearning, atau download template di atas, isi, lalu upload di menu Upload Dokumen.")
 
-    if st.button("Decompose"):
-        with st.spinner("AI sedang memecah materi..."):
-            payload = {
-                "document_id": doc_options[selected_doc],
-                "guide_document_id": guide_id,
-            }
-            resp = api_request("post", "/decompose", token=token, json=payload)
-        if resp and resp.status_code == 200:
-            modules = resp.json()["modules"]
-            df = pd.DataFrame(modules)
-            total_dur = df["duration_minutes"].sum() if "duration_minutes" in df.columns else 0
-            col1, col2 = st.columns(2)
-            col1.metric("Total Modul Mikro", len(df))
-            col2.metric("Total Durasi", f"{total_dur} menit")
-            show_table(df)
-            download_buttons(df, f"modul_mikro_{selected_doc.replace(' ', '_')}", title=f"Modul Mikro: {selected_doc}")
-        elif resp:
-            st.error(f"Error {resp.status_code}: {resp.text}")
+    st.divider()
+
+    input_mode = st.radio(
+        "Sumber materi",
+        ["📋 Dari Silabus yang sudah dibuat", "📁 Tanpa Silabus (dari dokumen profil perusahaan)"],
+        horizontal=True,
+    )
+
+    st.divider()
+
+    # ── MODE 1: Dari Silabus ──────────────────────────────────────────────────
+    if input_mode == "📋 Dari Silabus yang sudah dibuat":
+        resp_syl = api_request("get", "/syllabi", token=token)
+        syllabi = resp_syl.json() if resp_syl and resp_syl.status_code == 200 else []
+
+        if not syllabi:
+            st.warning("Belum ada silabus. Generate silabus terlebih dahulu di menu Generate Silabus.")
+            return
+
+        syl_options = {f"{s['topic']} ({s['created_at'][:10]})": s for s in syllabi}
+        selected_label = st.selectbox("Pilih Silabus", list(syl_options.keys()))
+        selected_syl = syl_options[selected_label]
+
+        output = selected_syl.get("output_json", {})
+        profile = output.get("org_profile", {})
+        with st.expander("📋 Ringkasan Silabus", expanded=False):
+            st.caption(
+                f"Perusahaan: {profile.get('organization_name', '-')}  |  "
+                f"Course: {output.get('course_type', '-')}  |  "
+                f"Level: {' → '.join(output.get('levels_covered', []))}"
+            )
+            st.markdown(f"**TLO:** {len(output.get('tlos', []))} objektif")
+            st.markdown(f"**PO:** {len(output.get('performance_objectives', []))} objektif")
+            st.markdown(f"**ELO:** {len(output.get('elos', []))} objektif")
+            total_syl = sum(e.get("duration_minutes", 0) for e in output.get("elos", []))
+            st.markdown(f"**Total Estimasi Durasi Silabus:** {total_syl} menit")
+
+        if st.button("Decompose", type="primary", disabled=not guide_selected, key="btn_decompose_syl"):
+            with st.spinner("AI sedang memecah silabus menjadi modul mikro..."):
+                resp = api_request("post", "/decompose-from-syllabus", token=token, json={
+                    "syllabus_id": selected_syl["id"],
+                    "guide_document_id": guide_id,
+                })
+
+            if resp and resp.status_code == 200:
+                data = resp.json()
+                modules = data["modules"]
+                syllabus_data = data["syllabus"]
+                _render_decompose_result(modules, guide_id, syllabus_data=syllabus_data,
+                                         safe_name=output.get("course_type", "modul"))
+            elif resp:
+                st.error(f"Error {resp.status_code}: {resp.text}")
+
+    # ── MODE 2: Tanpa Silabus ─────────────────────────────────────────────────
+    else:
+        if not doc_options:
+            st.warning("Belum ada dokumen. Upload dokumen profil perusahaan terlebih dahulu.")
+            return
+
+        profile_doc = st.selectbox("Pilih Dokumen Profil Perusahaan", list(doc_options.keys()))
+        profile_doc_id = doc_options[profile_doc]
+
+        level_labels = {
+            1: "Level 1 — Intro",
+            2: "Level 2 — Beginner",
+            3: "Level 3 — Intermediate",
+            4: "Level 4 — Advanced",
+            5: "Level 5 — Mastery",
+        }
+        start_level = st.selectbox(
+            "Level Peserta",
+            options=list(level_labels.keys()),
+            format_func=lambda x: level_labels[x],
+        )
+
+        all_types = ["B2B Sales", "Innovation", "Technology", "Leadership", "Operations",
+                     "Customer Experience", "Finance", "HR & People", "Digital Marketing", "Other"]
+        course_type_sel = st.selectbox("Tipe Course", all_types)
+        if course_type_sel == "Other":
+            course_type_custom = st.text_input("Ketik tipe course kustom", placeholder="contoh: AI Engineering")
+            course_type = course_type_custom.strip() if course_type_custom.strip() else course_type_sel
+        else:
+            course_type = course_type_sel
+
+        can_submit = guide_selected and bool(course_type)
+        if st.button("Decompose", type="primary", disabled=not can_submit, key="btn_decompose_manual"):
+            with st.spinner("AI sedang menyusun modul mikro dari profil perusahaan..."):
+                resp = api_request("post", "/decompose-without-syllabus", token=token, json={
+                    "profile_document_id": profile_doc_id,
+                    "guide_document_id": guide_id,
+                    "course_type": course_type,
+                    "start_level": start_level,
+                })
+
+            if resp and resp.status_code == 200:
+                data = resp.json()
+                modules = data["modules"]
+                manual_meta = {
+                    "org_profile": data.get("org_profile", {}),
+                    "course_type": data.get("course_type", course_type),
+                    "levels_covered": data.get("levels_covered", []),
+                }
+                _render_decompose_result(modules, guide_id, syllabus_data=None,
+                                         safe_name=course_type, manual_meta=manual_meta)
+            elif resp:
+                st.error(f"Error {resp.status_code}: {resp.text}")
 
 
 def page_recommend():
@@ -506,12 +820,19 @@ def page_recommend():
             })
         if resp and resp.status_code == 200:
             recs = resp.json()["recommendations"]
-            df = pd.DataFrame(recs)
-            total_dur = df["estimated_duration_minutes"].sum() if "estimated_duration_minutes" in df.columns else 0
+            total_dur = sum(r.get("estimated_duration_minutes", 0) for r in recs)
             st.success(f"Rekomendasi untuk {participant}")
             st.metric("Estimasi Total Durasi", f"{total_dur} menit")
-            show_table(df)
-            download_buttons(df, f"rekomendasi_{participant.replace(' ', '_')}", title=f"Rekomendasi: {participant}")
+            st.divider()
+            priority_icon = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}
+            for r in recs:
+                icon = priority_icon.get(r.get("priority", ""), "⚪")
+                st.markdown(f"**#{r.get('rank', '')}. {r.get('module_title', '')}** {icon} {r.get('priority', '')}")
+                st.markdown(f"**Alasan Relevansi:** {r.get('relevance_reason', '')}")
+                st.caption(f"Estimasi Durasi: {r.get('estimated_duration_minutes', '')} menit")
+                st.divider()
+            safe = participant.replace(" ", "_")
+            recommend_download_buttons(recs, f"rekomendasi_{safe}", participant=participant, gap=gap)
         elif resp:
             st.error(resp.json().get("detail", "Gagal generate rekomendasi"))
 
@@ -536,7 +857,9 @@ def page_history():
                     output = s["output_json"]
                     if isinstance(output, dict) and "tlos" in output:
                         profile = output.get("org_profile", {})
-                        st.caption(f"Perusahaan: {profile.get('organization_name', '-')} | Course: {output.get('course_type', '-')}")
+                        levels_covered = output.get("levels_covered", [])
+                        levels_str = " → ".join(levels_covered) if levels_covered else "-"
+                        st.caption(f"Perusahaan: {profile.get('organization_name', '-')} | Course: {output.get('course_type', '-')} | Level: {levels_str}")
 
                         st.markdown("**Terminal Learning Objectives (TLO)**")
                         for t in output.get("tlos", []):
@@ -568,26 +891,52 @@ def page_history():
             for g in groups:
                 label = f"{g['source_filename']} ({g['date']})"
                 with st.expander(label):
-                    df = pd.DataFrame(g["modules"])
-                    total_dur = df["duration_minutes"].sum() if "duration_minutes" in df.columns else 0
+                    modules = g["modules"]
+                    total_dur = sum(m.get("duration_minutes", 0) for m in modules)
                     col1, col2 = st.columns(2)
-                    col1.metric("Total Modul Mikro", len(df))
+                    col1.metric("Total Modul Mikro", len(modules))
                     col2.metric("Total Durasi", f"{total_dur} menit")
-                    show_table(df)
+                    st.divider()
+                    for m in modules:
+                        st.markdown(f"**Modul {m.get('module_number', m.get('id', '')[:4] if 'id' in m else '')}. {m.get('title', '')}**")
+                        st.caption(f"Format: {m.get('delivery_format', '')}  |  Durasi: {m.get('duration_minutes', '')} menit")
+                        st.markdown(f"**Tujuan:** {m.get('objective', m.get('specific_objective', ''))}")
+                        st.markdown(f"**Ringkasan:** {m.get('summary', m.get('content_summary', ''))}")
+                        st.divider()
                     safe_name = g["source_filename"].replace(" ", "_")[:40]
-                    download_buttons(df, f"modul_mikro_{safe_name}_{g['date']}", title=f"Modul Mikro: {g['source_filename']}")
+                    # Normalize field names for export
+                    export_modules = [{
+                        "module_number": i + 1,
+                        "title": m.get("title", ""),
+                        "specific_objective": m.get("objective", m.get("specific_objective", "")),
+                        "content_summary": m.get("summary", m.get("content_summary", "")),
+                        "delivery_format": m.get("delivery_format", ""),
+                        "duration_minutes": m.get("duration_minutes", 0),
+                    } for i, m in enumerate(modules)]
+                    decompose_download_buttons(export_modules, f"modul_mikro_{safe_name}_{g['date']}", source_name=g["source_filename"])
         else:
             st.info("Belum ada modul mikro yang dibuat.")
 
     with tab3:
         recs = data.get("recommendations", [])
         if recs:
+            priority_icon = {"High": "🔴", "Medium": "🟡", "Low": "🟢"}
             for r in recs:
                 with st.expander(f"{r['participant_name']} ({r['created_at'][:10]})"):
                     st.caption(f"Gap: {r['gap_input']}")
-                    df = pd.DataFrame(r["recommended_modules"])
-                    show_table(df)
-                    download_buttons(df, f"rekomendasi_{r['id'][:8]}", title=f"Rekomendasi: {r['participant_name']}")
+                    items = r["recommended_modules"]
+                    total_dur = sum(i.get("estimated_duration_minutes", 0) for i in items)
+                    st.metric("Estimasi Total Durasi", f"{total_dur} menit")
+                    st.divider()
+                    for item in items:
+                        icon = priority_icon.get(item.get("priority", ""), "⚪")
+                        st.markdown(f"**#{item.get('rank', '')}. {item.get('module_title', '')}** {icon} {item.get('priority', '')}")
+                        st.markdown(f"**Alasan Relevansi:** {item.get('relevance_reason', '')}")
+                        st.caption(f"Estimasi Durasi: {item.get('estimated_duration_minutes', '')} menit")
+                        st.divider()
+                    safe = r["participant_name"].replace(" ", "_")
+                    recommend_download_buttons(items, f"rekomendasi_{r['id'][:8]}",
+                                               participant=r["participant_name"], gap=r["gap_input"])
         else:
             st.info("Belum ada rekomendasi yang dibuat.")
 
