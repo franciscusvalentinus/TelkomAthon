@@ -3,6 +3,8 @@ TelkomAthon 2025 — Tim LDD SoDSNP
 
 ## Setup
 
+0. Buat virtual environment pada folder project aplikasi ini.
+
 1. Install dependencies:
    ```bash
    pip install -r requirements.txt
@@ -14,7 +16,10 @@ TelkomAthon 2025 — Tim LDD SoDSNP
    # Edit .env dengan nilai aktual
    ```
 
-3. Setup database — jalankan `supabase_setup.sql` di Supabase SQL Editor.
+3. Jalankan migrate db:
+   ```bash
+   python migrate_db.py
+   ```
 
 4. Jalankan FastAPI backend:
    ```bash
