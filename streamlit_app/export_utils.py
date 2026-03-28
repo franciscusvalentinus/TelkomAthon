@@ -164,15 +164,15 @@ def syllabus_to_text(final: dict) -> str:
 
     lines.append("")
 
-    # Performance Objectives
+    # PCS
     lines.append("=" * 60)
-    lines.append("PERFORMANCE OBJECTIVES")
+    lines.append("PCS")
     lines.append("=" * 60)
     for p in final.get("performance_objectives", []):
-        lines.append(f"\nPO {p.get('perf_number', '')}. [{p.get('related_tlo', '')}]")
-        lines.append(f"  {p.get('performance_objective', '')}")
-        lines.append(f"  Kondisi  : {p.get('condition', '')}")
-        lines.append(f"  Standar  : {p.get('standard', '')}")
+        lines.append(f"\nPCS {p.get('perf_number', '')}. [{p.get('related_tlo', '')}]")
+        lines.append(f"  Performance : {p.get('performance_objective', '')}")
+        lines.append(f"  Condition   : {p.get('condition', '')}")
+        lines.append(f"  Standard    : {p.get('standard', '')}")
 
     lines.append("")
 
@@ -182,7 +182,7 @@ def syllabus_to_text(final: dict) -> str:
     lines.append("=" * 60)
     total_dur = sum(e.get("duration_minutes", 0) for e in final.get("elos", []))
     for e in final.get("elos", []):
-        lines.append(f"\nELO {e.get('elo_number', '')}. [{e.get('related_performance', '')}]")
+        lines.append(f"\nELO {e.get('elo_number', '')}. [{e.get('related_performance', '').replace('PO ', 'PCS ')}]")
         lines.append(f"  {e.get('elo', '')}")
         lines.append(f"  Bloom Level     : {e.get('bloom_level', '')}")
         lines.append(f"  Metode Delivery : {e.get('delivery_method', '')}")
@@ -261,23 +261,25 @@ def syllabus_to_docx(final: dict, title: str = "Silabus Pelatihan") -> bytes:
         p.add_run("Rationale: ").bold = True
         p.add_run(t.get("rationale", ""))
 
-    # Performance Objectives
-    doc.add_heading("Performance Objectives", level=1)
+    # PCS
+    doc.add_heading("PCS", level=1)
     for po in final.get("performance_objectives", []):
-        doc.add_heading(f"PO {po.get('perf_number', '')}. [{po.get('related_tlo', '')}]", level=2)
-        doc.add_paragraph(po.get("performance_objective", ""))
+        doc.add_heading(f"PCS {po.get('perf_number', '')}. [{po.get('related_tlo', '')}]", level=2)
         p = doc.add_paragraph()
-        p.add_run("Kondisi: ").bold = True
+        p.add_run("Performance : ").bold = True
+        p.add_run(po.get("performance_objective", ""))
+        p = doc.add_paragraph()
+        p.add_run("Condition : ").bold = True
         p.add_run(po.get("condition", ""))
         p = doc.add_paragraph()
-        p.add_run("Standar: ").bold = True
+        p.add_run("Standard : ").bold = True
         p.add_run(po.get("standard", ""))
 
     # ELOs
     doc.add_heading("Enabling Learning Objectives (ELO)", level=1)
     total_dur = sum(e.get("duration_minutes", 0) for e in final.get("elos", []))
     for e in final.get("elos", []):
-        doc.add_heading(f"ELO {e.get('elo_number', '')}. [{e.get('related_performance', '')}]", level=2)
+        doc.add_heading(f"ELO {e.get('elo_number', '')}. [{e.get('related_performance', '').replace('PO ', 'PCS ')}]", level=2)
         doc.add_paragraph(e.get("elo", ""))
         p = doc.add_paragraph()
         p.add_run("Bloom Level: ").bold = True
@@ -359,18 +361,18 @@ def syllabus_to_pdf(final: dict, title: str = "Silabus Pelatihan") -> bytes:
         add(f"<i>Rationale: {t.get('rationale', '')}</i>", space=0.3)
     hr()
 
-    add("Performance Objectives", h1, 0.1)
+    add("PCS", h1, 0.1)
     for po in final.get("performance_objectives", []):
-        add(f"<b>PO {po.get('perf_number', '')}.</b> [{po.get('related_tlo', '')}]", bold_style, 0.05)
-        add(po.get("performance_objective", ""))
-        add(f"<b>Kondisi:</b> {po.get('condition', '')}")
-        add(f"<b>Standar:</b> {po.get('standard', '')}", space=0.3)
+        add(f"<b>PCS {po.get('perf_number', '')}.</b> [{po.get('related_tlo', '')}]", bold_style, 0.05)
+        add(f"<b>Performance :</b> {po.get('performance_objective', '')}")
+        add(f"<b>Condition :</b> {po.get('condition', '')}")
+        add(f"<b>Standard :</b> {po.get('standard', '')}", space=0.3)
     hr()
 
     add("Enabling Learning Objectives (ELO)", h1, 0.1)
     total_dur = sum(e.get("duration_minutes", 0) for e in final.get("elos", []))
     for e in final.get("elos", []):
-        add(f"<b>ELO {e.get('elo_number', '')}.</b> [{e.get('related_performance', '')}]", bold_style, 0.05)
+        add(f"<b>ELO {e.get('elo_number', '')}.</b> [{e.get('related_performance', '').replace('PO ', 'PCS ')}]", bold_style, 0.05)
         add(e.get("elo", ""))
         add(f"<b>Bloom:</b> {e.get('bloom_level', '')}  |  "
             f"<b>Metode:</b> {e.get('delivery_method', '')}  |  "
@@ -593,7 +595,7 @@ def recommend_to_pdf(recs: list, participant: str = "", gap: str = "") -> bytes:
 
 # ── Combined syllabus + decompose export ─────────────────────────────────────
 
-def combined_to_docx(syllabus_data: dict, modules: list) -> bytes:
+def combined_to_docx(syllabus_data: dict, modules: list, quiz_data: dict | None = None) -> bytes:
     """Export silabus + modul mikro dalam satu DOCX."""
     from docx import Document
     from docx.shared import Inches
@@ -644,20 +646,22 @@ def combined_to_docx(syllabus_data: dict, modules: list) -> bytes:
         p.add_run("Rationale: ").bold = True
         p.add_run(t.get("rationale", ""))
 
-    doc.add_heading("Performance Objectives", level=2)
+    doc.add_heading("PCS", level=2)
     for po in output.get("performance_objectives", []):
-        doc.add_heading(f"PO {po.get('perf_number', '')}. [{po.get('related_tlo', '')}]", level=3)
-        doc.add_paragraph(po.get("performance_objective", ""))
+        doc.add_heading(f"PCS {po.get('perf_number', '')}. [{po.get('related_tlo', '')}]", level=3)
         p = doc.add_paragraph()
-        p.add_run("Kondisi: ").bold = True
+        p.add_run("Performance : ").bold = True
+        p.add_run(po.get("performance_objective", ""))
+        p = doc.add_paragraph()
+        p.add_run("Condition : ").bold = True
         p.add_run(po.get("condition", ""))
         p = doc.add_paragraph()
-        p.add_run("Standar: ").bold = True
+        p.add_run("Standard : ").bold = True
         p.add_run(po.get("standard", ""))
 
     doc.add_heading("Enabling Learning Objectives (ELO)", level=2)
     for e in output.get("elos", []):
-        doc.add_heading(f"ELO {e.get('elo_number', '')}. [{e.get('related_performance', '')}]", level=3)
+        doc.add_heading(f"ELO {e.get('elo_number', '')}. [{e.get('related_performance', '').replace('PO ', 'PCS ')}]", level=3)
         doc.add_paragraph(e.get("elo", ""))
         p = doc.add_paragraph()
         p.add_run("Bloom: ").bold = True
@@ -694,12 +698,46 @@ def combined_to_docx(syllabus_data: dict, modules: list) -> bytes:
     doc.add_heading("Bagian 3 — Timeline Penyelesaian Modul", level=1)
     timeline_to_docx_section(doc, modules)
 
+    # ── Quiz (opsional) ──
+    if quiz_data:
+        doc.add_page_break()
+        has_quiz = quiz_data.get("has_quiz_elos", False)
+        mode = quiz_data.get("mode", "single")
+        bagian_num = 4
+        doc.add_heading(f"Bagian {bagian_num} — Soal Quiz", level=1)
+        if not has_quiz:
+            doc.add_paragraph("Tidak ada ELO yang metodenya Quiz pada silabus ini.")
+        else:
+            def _write_q(questions: list, section: str):
+                doc.add_heading(section, level=2)
+                for q in questions:
+                    doc.add_heading(f"Soal {q.get('nomor', '')}.", level=3)
+                    p = doc.add_paragraph()
+                    p.add_run("ELO: ").bold = True
+                    p.add_run(q.get("elo_reference", ""))
+                    doc.add_paragraph(q.get("pertanyaan", ""))
+                    for k, v in q.get("pilihan", {}).items():
+                        doc.add_paragraph(f"{k}. {v}", style="List Bullet")
+                    p = doc.add_paragraph()
+                    p.add_run("Jawaban Benar: ").bold = True
+                    p.add_run(q.get("jawaban_benar", ""))
+                    p = doc.add_paragraph()
+                    p.add_run("Penjelasan: ").bold = True
+                    p.add_run(q.get("penjelasan", ""))
+
+            if mode == "prepost":
+                _write_q(quiz_data.get("pre_test", []), "Pre-test")
+                doc.add_page_break()
+                _write_q(quiz_data.get("post_test", []), "Post-test")
+            else:
+                _write_q(quiz_data.get("quiz", []), "Quiz")
+
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()
 
 
-def combined_to_pdf(syllabus_data: dict, modules: list) -> bytes:
+def combined_to_pdf(syllabus_data: dict, modules: list, quiz_data: dict | None = None) -> bytes:
     """Export silabus + modul mikro dalam satu PDF."""
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
@@ -753,15 +791,17 @@ def combined_to_pdf(syllabus_data: dict, modules: list) -> bytes:
         add(f"<i>Rationale: {t.get('rationale', '')}</i>", space=0.25)
     hr()
 
-    add("Performance Objectives", styles["Heading2"], 0.1)
+    add("PCS", styles["Heading2"], 0.1)
     for po in output.get("performance_objectives", []):
-        add(f"<b>PO {po.get('perf_number', '')}.</b> [{po.get('related_tlo', '')}] {po.get('performance_objective', '')}", bold_style, 0.05)
-        add(f"<b>Kondisi:</b> {po.get('condition', '')}  |  <b>Standar:</b> {po.get('standard', '')}", space=0.25)
+        add(f"<b>PCS {po.get('perf_number', '')}.</b> [{po.get('related_tlo', '')}]", bold_style, 0.05)
+        add(f"<b>Performance :</b> {po.get('performance_objective', '')}")
+        add(f"<b>Condition :</b> {po.get('condition', '')}")
+        add(f"<b>Standard :</b> {po.get('standard', '')}", space=0.25)
     hr()
 
     add("Enabling Learning Objectives (ELO)", styles["Heading2"], 0.1)
     for e in output.get("elos", []):
-        add(f"<b>ELO {e.get('elo_number', '')}.</b> [{e.get('related_performance', '')}] {e.get('elo', '')}", bold_style, 0.05)
+        add(f"<b>ELO {e.get('elo_number', '')}.</b> [{e.get('related_performance', '').replace('PO ', 'PCS ')}] {e.get('elo', '')}", bold_style, 0.05)
         add(f"<b>Bloom:</b> {e.get('bloom_level', '')}  |  <b>Metode:</b> {e.get('delivery_method', '')}  |  <b>Durasi:</b> {e.get('duration_minutes', '')} menit", space=0.25)
     hr()
 
@@ -787,6 +827,44 @@ def combined_to_pdf(syllabus_data: dict, modules: list) -> bytes:
     elements.append(Paragraph("Bagian 3 — Timeline Penyelesaian Modul", styles["Heading1"]))
     elements.append(Spacer(1, 0.3*cm))
     elements.extend(timeline_to_pdf_elements(modules, styles))
+
+    # Bagian 4: Quiz (opsional)
+    if quiz_data:
+        elements.append(PageBreak())
+        has_quiz = quiz_data.get("has_quiz_elos", False)
+        mode = quiz_data.get("mode", "single")
+        elements.append(Paragraph("Bagian 4 — Soal Quiz", styles["Heading1"]))
+        elements.append(Spacer(1, 0.3*cm))
+        if not has_quiz:
+            elements.append(Paragraph("Tidak ada ELO yang metodenya Quiz pada silabus ini.", normal))
+        else:
+            priority_colors_q = {"High": "#c0392b", "Medium": "#e67e22", "Low": "#27ae60"}
+
+            def _write_q_pdf(questions: list, section: str):
+                elements.append(Paragraph(section, styles["Heading2"]))
+                elements.append(Spacer(1, 0.2*cm))
+                for q in questions:
+                    elements.append(Paragraph(f"<b>Soal {q.get('nomor', '')}.</b>", bold_style))
+                    elements.append(Paragraph(f"<b>ELO:</b> {q.get('elo_reference', '')}", normal))
+                    elements.append(Spacer(1, 0.1*cm))
+                    elements.append(Paragraph(q.get("pertanyaan", ""), normal))
+                    elements.append(Spacer(1, 0.1*cm))
+                    for k, v in q.get("pilihan", {}).items():
+                        elements.append(Paragraph(f"{k}. {v}", normal))
+                    elements.append(Spacer(1, 0.1*cm))
+                    elements.append(Paragraph(f"<b>Jawaban Benar:</b> {q.get('jawaban_benar', '')}", bold_style))
+                    elements.append(Paragraph(f"<b>Penjelasan:</b> {q.get('penjelasan', '')}", normal))
+                    elements.append(Spacer(1, 0.2*cm))
+                    elements.append(HRFlowable(width="100%", thickness=0.3,
+                                               color=colors.HexColor("#cccccc")))
+                    elements.append(Spacer(1, 0.15*cm))
+
+            if mode == "prepost":
+                _write_q_pdf(quiz_data.get("pre_test", []), "Pre-test")
+                elements.append(PageBreak())
+                _write_q_pdf(quiz_data.get("post_test", []), "Post-test")
+            else:
+                _write_q_pdf(quiz_data.get("quiz", []), "Quiz")
 
     doc.build(elements, onFirstPage=_pdf_watermark, onLaterPages=_pdf_watermark)
     return buf.getvalue()
@@ -1088,12 +1166,10 @@ def decompose_manual_to_text(modules: list, manual_meta: dict) -> str:
     return "\n".join(lines)
 
 
-def combined_to_text(syllabus_data: dict, modules: list) -> str:
+def combined_to_text(syllabus_data: dict, modules: list, quiz_data: dict | None = None) -> str:
     """Plain text export: silabus lengkap + modul mikro."""
     output = syllabus_data.get("output_json", {})
-    # Reuse syllabus_to_text for the syllabus part
     syl_text = syllabus_to_text(output)
-    # Then append modules
     total = sum(m.get("duration_minutes", 0) for m in modules)
     lines = [syl_text, "", "=" * 60, "DEKOMPOSISI MODUL MIKRO",
              f"Total Modul: {len(modules)}  |  Total Durasi: {total} menit",
@@ -1110,4 +1186,452 @@ def combined_to_text(syllabus_data: dict, modules: list) -> str:
             lines.append(f"Berdasarkan: {m.get('related_elo', '')}")
     lines.append("")
     lines.append("=" * 60)
+
+    if quiz_data:
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("SOAL QUIZ")
+        lines.append("=" * 60)
+        if not quiz_data.get("has_quiz_elos"):
+            lines.append("Tidak ada ELO yang metodenya Quiz pada silabus ini.")
+        else:
+            mode = quiz_data.get("mode", "single")
+
+            def _write_q_text(questions: list, section: str):
+                lines.append("")
+                lines.append(f"── {section} ──")
+                for q in questions:
+                    lines.append("")
+                    lines.append(f"Soal {q.get('nomor', '')}.")
+                    lines.append(f"ELO       : {q.get('elo_reference', '')}")
+                    lines.append(f"Pertanyaan: {q.get('pertanyaan', '')}")
+                    for k, v in q.get("pilihan", {}).items():
+                        lines.append(f"  {k}. {v}")
+                    lines.append(f"Jawaban   : {q.get('jawaban_benar', '')}")
+                    lines.append(f"Penjelasan: {q.get('penjelasan', '')}")
+
+            if mode == "prepost":
+                _write_q_text(quiz_data.get("pre_test", []), "Pre-test")
+                _write_q_text(quiz_data.get("post_test", []), "Post-test")
+            else:
+                _write_q_text(quiz_data.get("quiz", []), "Quiz")
+
+        lines.append("")
+        lines.append("=" * 60)
+
     return "\n".join(lines)
+
+
+# ── Career Roadmap export ─────────────────────────────────────────────────────
+
+def roadmap_to_text(summary: dict, phases: list) -> str:
+    lines = []
+    lines.append("=" * 60)
+    lines.append("CAREER ROADMAP LEARNING PATH")
+    lines.append("=" * 60)
+    lines.append(f"Peserta       : {summary.get('participant', '-')}")
+    lines.append(f"Posisi Awal   : {summary.get('from', '-')}")
+    lines.append(f"Target Posisi : {summary.get('to', '-')}")
+    lines.append(f"Timeline      : {summary.get('timeline_months', '-')} bulan")
+    lines.append(f"Total Phase   : {summary.get('num_phases', '-')}")
+    lines.append("")
+
+    for phase in phases:
+        lines.append("=" * 60)
+        lines.append(f"PHASE {phase.get('phase_number', '')} — {phase.get('phase_name', '').upper()}")
+        lines.append(f"Periode : {phase.get('month_range', '')}")
+        lines.append(f"Fokus   : {phase.get('focus', '')}")
+        lines.append("-" * 40)
+        for m in phase.get("modules", []):
+            urgency = m.get("urgency", "")
+            lines.append(f"\n[{urgency}] {m.get('module_title', '')}")
+            lines.append(f"  {m.get('description', '')}")
+            lines.append(f"  Metode: {m.get('delivery_method', '')}  |  Durasi: {m.get('duration_minutes', '')} menit")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def roadmap_to_docx(summary: dict, phases: list) -> bytes:
+    from docx import Document
+    from docx.shared import RGBColor
+    doc = Document()
+    _docx_add_logo_header(doc)
+
+    doc.add_heading("Roadmap Karir", level=0)
+    for label, val in [
+        ("Peserta", summary.get("participant", "-")),
+        ("Posisi Awal", summary.get("from", "-")),
+        ("Target Posisi", summary.get("to", "-")),
+        ("Timeline", f"{summary.get('timeline_months', '-')} bulan"),
+    ]:
+        p = doc.add_paragraph()
+        p.add_run(f"{label}: ").bold = True
+        p.add_run(val)
+
+    urgency_colors = {"Critical": "C0392B", "Important": "E67E22", "Nice-to-have": "27AE60"}
+
+    for phase in phases:
+        doc.add_heading(
+            f"Phase {phase.get('phase_number', '')} — {phase.get('phase_name', '')} ({phase.get('month_range', '')})",
+            level=1
+        )
+        p = doc.add_paragraph()
+        p.add_run("Fokus: ").bold = True
+        p.add_run(phase.get("focus", ""))
+
+        for m in phase.get("modules", []):
+            urgency = m.get("urgency", "")
+            doc.add_heading(f"[{urgency}] {m.get('module_title', '')}", level=2)
+            doc.add_paragraph(m.get("description", ""))
+            p = doc.add_paragraph()
+            p.add_run("Metode: ").bold = True
+            p.add_run(m.get("delivery_method", ""))
+            p.add_run("  |  Durasi: ").bold = True
+            p.add_run(f"{m.get('duration_minutes', '')} menit")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def roadmap_to_pdf(summary: dict, phases: list) -> bytes:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=2*cm, rightMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+    styles = getSampleStyleSheet()
+    normal = styles["Normal"]
+    bold_style = ParagraphStyle("bold", parent=normal, fontName="Helvetica-Bold")
+    elements = []
+
+    def add(text, style=normal, space=0.2):
+        elements.append(Paragraph(text, style))
+        elements.append(Spacer(1, space * cm))
+
+    def hr():
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#cccccc")))
+        elements.append(Spacer(1, 0.2*cm))
+
+    urgency_hex = {"Critical": "#c0392b", "Important": "#e67e22", "Nice-to-have": "#27ae60"}
+
+    add("Roadmap Karir", styles["Title"], 0.4)
+    hr()
+    add(f"<b>Peserta:</b> {summary.get('participant', '-')}")
+    add(f"<b>Posisi Awal:</b> {summary.get('from', '-')}")
+    add(f"<b>Target Posisi:</b> {summary.get('to', '-')}")
+    add(f"<b>Timeline:</b> {summary.get('timeline_months', '-')} bulan")
+    hr()
+
+    for i, phase in enumerate(phases):
+        if i > 0:
+            elements.append(PageBreak())
+        add(
+            f"Phase {phase.get('phase_number', '')} — {phase.get('phase_name', '')} ({phase.get('month_range', '')})",
+            styles["Heading1"], 0.1
+        )
+        add(f"<b>Fokus:</b> {phase.get('focus', '')}")
+        hr()
+
+        for m in phase.get("modules", []):
+            urgency = m.get("urgency", "")
+            color = urgency_hex.get(urgency, "#333333")
+            add(f'<font color="{color}"><b>[{urgency}] {m.get("module_title", "")}</b></font>',
+                bold_style, 0.05)
+            add(m.get("description", ""))
+            add(f"<b>Metode:</b> {m.get('delivery_method', '')}  |  "
+                f"<b>Durasi:</b> {m.get('duration_minutes', '')} menit", space=0.3)
+            hr()
+
+    doc.build(elements, onFirstPage=_pdf_watermark, onLaterPages=_pdf_watermark)
+    return buf.getvalue()
+
+
+# ── Bulk Recommend export ─────────────────────────────────────────────────────
+
+def bulk_recommend_to_xlsx(results: list) -> bytes:
+    """Export hasil bulk rekomendasi ke XLSX — satu sheet per peserta."""
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # Sheet ringkasan
+        summary_rows = []
+        for r in results:
+            recs = r.get("recommendations", [])
+            total_dur = sum(x.get("estimated_duration_minutes", 0) for x in recs)
+            high = sum(1 for x in recs if x.get("priority") == "High")
+            lvl = r.get("recommended_level", "-")
+            lvl_label = r.get("level_label", "-")
+            summary_rows.append({
+                "Nama": r.get("nama", ""),
+                "Jabatan": r.get("jabatan") or "-",
+                "Departemen": r.get("departemen") or "-",
+                "Gap Kompetensi": r.get("gap_kompetensi", ""),
+                "Recommended Level": f"Level {lvl} — {lvl_label}" if lvl != "-" else "-",
+                "Jumlah Rekomendasi": len(recs),
+                "Prioritas High": high,
+                "Total Durasi (menit)": total_dur,
+            })
+        pd.DataFrame(summary_rows).to_excel(writer, index=False, sheet_name="Ringkasan")
+
+        # Sheet detail per peserta
+        for r in results:
+            recs = r.get("recommendations", [])
+            rows = []
+            for rec in recs:
+                rows.append({
+                    "Rank": rec.get("rank", ""),
+                    "Modul": rec.get("module_title", ""),
+                    "Alasan Relevansi": rec.get("relevance_reason", ""),
+                    "Prioritas": rec.get("priority", ""),
+                    "Durasi (menit)": rec.get("estimated_duration_minutes", ""),
+                })
+            sheet_name = (r.get("nama", "Peserta") or "Peserta")[:31]  # Excel max 31 chars
+            pd.DataFrame(rows).to_excel(writer, index=False, sheet_name=sheet_name)
+
+    return buf.getvalue()
+
+
+def bulk_recommend_to_docx(results: list) -> bytes:
+    """Export hasil bulk rekomendasi ke DOCX — satu section per peserta."""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    _docx_add_logo_header(doc)
+    doc.add_heading("Personalisasi Multi User — Rekomendasi Learning Path", level=0)
+
+    priority_label = {"High": "[HIGH]", "Medium": "[MED]", "Low": "[LOW]"}
+
+    for idx, r in enumerate(results):
+        if idx > 0:
+            doc.add_page_break()
+        recs = r.get("recommendations", [])
+        total_dur = sum(x.get("estimated_duration_minutes", 0) for x in recs)
+
+        doc.add_heading(r.get("nama", ""), level=1)
+        meta_fields = [
+            ("Jabatan", r.get("jabatan")),
+            ("Departemen", r.get("departemen")),
+            ("Gap Kompetensi", r.get("gap_kompetensi")),
+        ]
+        for label, val in meta_fields:
+            if val:
+                p = doc.add_paragraph()
+                p.add_run(f"{label}: ").bold = True
+                p.add_run(val)
+        lvl = r.get("recommended_level")
+        lvl_label = r.get("level_label", "")
+        if lvl:
+            p = doc.add_paragraph()
+            p.add_run("Recommended Level: ").bold = True
+            p.add_run(f"Level {lvl} — {lvl_label}")
+        doc.add_paragraph(f"Total Estimasi Durasi: {total_dur} menit")
+
+        for rec in recs:
+            lbl = priority_label.get(rec.get("priority", ""), "")
+            doc.add_heading(f"#{rec.get('rank', '')}. {rec.get('module_title', '')} {lbl}", level=2)
+            p = doc.add_paragraph()
+            p.add_run("Alasan Relevansi: ").bold = True
+            p.add_run(rec.get("relevance_reason", ""))
+            p = doc.add_paragraph()
+            p.add_run("Estimasi Durasi: ").bold = True
+            p.add_run(f"{rec.get('estimated_duration_minutes', '')} menit")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def bulk_recommend_to_pdf(results: list) -> bytes:
+    """Export hasil bulk rekomendasi ke PDF — satu section per peserta."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=2*cm, rightMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+    styles = getSampleStyleSheet()
+    normal = styles["Normal"]
+    elements = []
+
+    elements.append(Paragraph("Personalisasi Multi User — Rekomendasi Learning Path", styles["Title"]))
+    elements.append(Spacer(1, 0.4*cm))
+
+    priority_colors = {"High": "#c0392b", "Medium": "#e67e22", "Low": "#27ae60"}
+
+    for idx, r in enumerate(results):
+        if idx > 0:
+            elements.append(PageBreak())
+
+        recs = r.get("recommendations", [])
+        total_dur = sum(x.get("estimated_duration_minutes", 0) for x in recs)
+
+        elements.append(Paragraph(r.get("nama", ""), styles["Heading1"]))
+        if r.get("jabatan"):
+            elements.append(Paragraph(f"<b>Jabatan:</b> {r['jabatan']}", normal))
+        if r.get("departemen"):
+            elements.append(Paragraph(f"<b>Departemen:</b> {r['departemen']}", normal))
+        elements.append(Paragraph(f"<b>Gap Kompetensi:</b> {r.get('gap_kompetensi', '')}", normal))
+        lvl = r.get("recommended_level")
+        lvl_label = r.get("level_label", "")
+        if lvl:
+            elements.append(Paragraph(f"<b>Recommended Level:</b> Level {lvl} — {lvl_label}", normal))
+        elements.append(Paragraph(f"<b>Total Estimasi Durasi:</b> {total_dur} menit", normal))
+        elements.append(Spacer(1, 0.3*cm))
+        elements.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#1a3c6e")))
+        elements.append(Spacer(1, 0.2*cm))
+
+        for rec in recs:
+            color = priority_colors.get(rec.get("priority", ""), "#333333")
+            elements.append(Paragraph(
+                f'<font color="{color}"><b>#{rec.get("rank", "")}. {rec.get("module_title", "")} [{rec.get("priority", "")}]</b></font>',
+                styles["Heading2"]))
+            elements.append(Paragraph(f"<b>Alasan Relevansi:</b> {rec.get('relevance_reason', '')}", normal))
+            elements.append(Spacer(1, 0.1*cm))
+            elements.append(Paragraph(
+                f"<b>Estimasi Durasi:</b> {rec.get('estimated_duration_minutes', '')} menit", normal))
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(HRFlowable(width="100%", thickness=0.3, color=colors.HexColor("#cccccc")))
+            elements.append(Spacer(1, 0.15*cm))
+
+    doc.build(elements, onFirstPage=_pdf_watermark, onLaterPages=_pdf_watermark)
+    return buf.getvalue()
+
+
+# ── Quiz export ───────────────────────────────────────────────────────────────
+
+def quiz_to_docx(quiz_data: dict, course_type: str = "") -> bytes:
+    """Export soal quiz (single / pre-post) ke DOCX."""
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    _docx_add_logo_header(doc)
+
+    mode = quiz_data.get("mode", "single")
+    title = f"Soal Quiz — {course_type}" if course_type else "Soal Quiz"
+    doc.add_heading(title, level=0)
+
+    def _write_questions(questions: list, section_title: str):
+        doc.add_heading(section_title, level=1)
+        for q in questions:
+            doc.add_heading(f"Soal {q.get('nomor', '')}.", level=2)
+            p = doc.add_paragraph()
+            p.add_run("ELO: ").bold = True
+            p.add_run(q.get("elo_reference", ""))
+            doc.add_paragraph(q.get("pertanyaan", ""))
+            for key, val in q.get("pilihan", {}).items():
+                doc.add_paragraph(f"{key}. {val}", style="List Bullet")
+            p = doc.add_paragraph()
+            p.add_run("Jawaban Benar: ").bold = True
+            p.add_run(q.get("jawaban_benar", ""))
+            p = doc.add_paragraph()
+            p.add_run("Penjelasan: ").bold = True
+            p.add_run(q.get("penjelasan", ""))
+
+    if mode == "prepost":
+        _write_questions(quiz_data.get("pre_test", []), "Pre-test")
+        doc.add_page_break()
+        _write_questions(quiz_data.get("post_test", []), "Post-test")
+    else:
+        _write_questions(quiz_data.get("quiz", []), "Quiz")
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def quiz_to_pdf(quiz_data: dict, course_type: str = "") -> bytes:
+    """Export soal quiz (single / pre-post) ke PDF."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable, PageBreak
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=2*cm, rightMargin=2*cm,
+                            topMargin=2*cm, bottomMargin=2*cm)
+    styles = getSampleStyleSheet()
+    normal = styles["Normal"]
+    bold_style = ParagraphStyle("bold", parent=normal, fontName="Helvetica-Bold")
+    elements = []
+
+    mode = quiz_data.get("mode", "single")
+    title = f"Soal Quiz — {course_type}" if course_type else "Soal Quiz"
+    elements.append(Paragraph(title, styles["Title"]))
+    elements.append(Spacer(1, 0.4*cm))
+
+    def _write_questions(questions: list, section_title: str):
+        elements.append(Paragraph(section_title, styles["Heading1"]))
+        elements.append(Spacer(1, 0.2*cm))
+        for q in questions:
+            elements.append(Paragraph(f"<b>Soal {q.get('nomor', '')}.</b>", bold_style))
+            elements.append(Paragraph(f"<b>ELO:</b> {q.get('elo_reference', '')}", normal))
+            elements.append(Spacer(1, 0.1*cm))
+            elements.append(Paragraph(q.get("pertanyaan", ""), normal))
+            elements.append(Spacer(1, 0.1*cm))
+            for key, val in q.get("pilihan", {}).items():
+                elements.append(Paragraph(f"{key}. {val}", normal))
+            elements.append(Spacer(1, 0.1*cm))
+            elements.append(Paragraph(f"<b>Jawaban Benar:</b> {q.get('jawaban_benar', '')}", bold_style))
+            elements.append(Paragraph(f"<b>Penjelasan:</b> {q.get('penjelasan', '')}", normal))
+            elements.append(Spacer(1, 0.2*cm))
+            elements.append(HRFlowable(width="100%", thickness=0.3, color=colors.HexColor("#cccccc")))
+            elements.append(Spacer(1, 0.15*cm))
+
+    if mode == "prepost":
+        _write_questions(quiz_data.get("pre_test", []), "Pre-test")
+        elements.append(PageBreak())
+        _write_questions(quiz_data.get("post_test", []), "Post-test")
+    else:
+        _write_questions(quiz_data.get("quiz", []), "Quiz")
+
+    doc.build(elements, onFirstPage=_pdf_watermark, onLaterPages=_pdf_watermark)
+    return buf.getvalue()
+
+
+def quiz_to_xlsx(quiz_data: dict) -> bytes:
+    """Export soal quiz ke XLSX."""
+    buf = io.BytesIO()
+    mode = quiz_data.get("mode", "single")
+
+    def _to_rows(questions: list) -> list:
+        rows = []
+        for q in questions:
+            pilihan = q.get("pilihan", {})
+            rows.append({
+                "Nomor": q.get("nomor", ""),
+                "ELO": q.get("elo_reference", ""),
+                "Pertanyaan": q.get("pertanyaan", ""),
+                "A": pilihan.get("A", ""),
+                "B": pilihan.get("B", ""),
+                "C": pilihan.get("C", ""),
+                "D": pilihan.get("D", ""),
+                "Jawaban Benar": q.get("jawaban_benar", ""),
+                "Penjelasan": q.get("penjelasan", ""),
+            })
+        return rows
+
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        if mode == "prepost":
+            pd.DataFrame(_to_rows(quiz_data.get("pre_test", []))).to_excel(
+                writer, index=False, sheet_name="Pre-test")
+            pd.DataFrame(_to_rows(quiz_data.get("post_test", []))).to_excel(
+                writer, index=False, sheet_name="Post-test")
+        else:
+            pd.DataFrame(_to_rows(quiz_data.get("quiz", []))).to_excel(
+                writer, index=False, sheet_name="Quiz")
+
+    return buf.getvalue()

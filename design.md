@@ -1,804 +1,327 @@
 # Design Document
-# AI-Powered Curriculum Design & Personalized Micro-Learning Assistant
+# PRIMA — Personalized Responsive Intelligent Micro-Learning Assistant
 # TelkomAthon 2025 — Tim LDD SoDSNP
 
 ---
 
 ## 1. High-Level Architecture
 
-Sistem terdiri dari tiga lapisan utama: Streamlit frontend, FastAPI backend, dan Supabase (PostgreSQL + pgvector) sebagai persistent storage. Azure OpenAI menyediakan kemampuan LLM (GPT-4o) dan embedding (text-embedding-3-large).
-
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                        STREAMLIT FRONTEND                        │
 │                                                                  │
-│  Page 1: Upload & Manage Docs                                    │
-│  Page 2: Generate Syllabus (AI Agent 1)                          │
-│  Page 3: Decompose to Micro-Modules (AI Agent 2)                 │
-│  Page 4: Personalized Recommendation (AI Agent 3)               │
-│  Page 5: Export & History                                        │
+│  📋 Generate Silabus      🔬 Dekomposisi Modul                   │
+│  🎯 Personalisasi User    👥 Personalisasi Multi User            │
+│  🗺️  Roadmap Karir        📥 Riwayat & Export                    │
 └────────────────────────┬─────────────────────────────────────────┘
                          │ HTTP/REST (localhost:8000)
 ┌────────────────────────▼─────────────────────────────────────────┐
 │                        FASTAPI BACKEND                           │
 │                                                                  │
-│  POST /auth/register       → create user account                 │
-│  POST /auth/login          → return JWT token                    │
-│  POST /upload              → parser + embedder (auth required)   │
-│  POST /syllabus/generate   → RAG + GPT-4o (auth required)        │
-│  POST /decompose           → RAG + GPT-4o (auth required)        │
-│  POST /recommend           → vector search + GPT-4o (auth req)  │
-│  GET  /documents           → list user's docs (auth required)    │
-│  GET  /history             → user's past sessions (auth req)     │
+│  /auth/*                  → register, login                      │
+│  /upload, /documents      → document management                  │
+│  /syllabus/*              → 5-step wizard endpoints              │
+│  /decompose-from-syllabus → micro-module decomposition           │
+│  /recommend               → personal recommendation             │
+│  /bulk-recommend          → bulk recommendation (multi-user)     │
+│  /career-roadmap          → career roadmap generation            │
+│  /generate-quiz           → quiz generation (pre/post/single)    │
+│  /history                 → aggregated history per user          │
 └──────────┬──────────────────────────────────┬────────────────────┘
            │                                  │
 ┌──────────▼──────────┐           ┌───────────▼──────────────────┐
 │   AZURE OPENAI      │           │   SUPABASE (PostgreSQL)      │
-│                     │           │                              │
-│  GPT-4o             │           │  documents                   │
-│  (chat completion)  │           │  document_chunks + VECTOR    │
-│                     │           │  syllabi                     │
-│  text-embedding-    │           │  micro_modules + VECTOR      │
-│  3-large            │           │  recommendations             │
-└─────────────────────┘           └──────────────────────────────┘
+│  GPT-4o (LLM)       │           │  users, documents            │
+│  text-embedding-    │           │  document_chunks (VECTOR)    │
+│  3-large (3072 dim) │           │  syllabi, micro_modules      │
+└─────────────────────┘           │  recommendations             │
+                                  └──────────────────────────────┘
 ```
 
 ---
 
-## 2. Authentication Design
+## 2. Navigation & Pages
 
-### 2.1 Auth Flow
+Sidebar menggunakan `st.radio()`. Semua halaman hanya dapat diakses setelah login.
 
+| Menu | Fungsi |
+|---|---|
+| 📋 Generate Silabus | Wizard 6 langkah: profil → course → TLO → PCS → ELO → finalisasi |
+| 🔬 Dekomposisi Modul | Pecah silabus menjadi modul mikro + timeline + quiz opsional |
+| 🎯 Personalisasi User | Rekomendasi learning path untuk 1 peserta |
+| 👥 Personalisasi Multi User | Rekomendasi massal via upload Excel |
+| 🗺️ Roadmap Karir | Roadmap pengembangan karir bertahap |
+| 📥 Riwayat & Export | Riwayat semua hasil, dikelompokkan per fitur |
+
+---
+
+## 3. Authentication Design
+
+### Flow
 ```
-Register:
-  User → POST /auth/register {email, password, full_name}
-       → hash password (bcrypt)
-       → INSERT INTO users
-       → return {user_id, email}
-
-Login:
-  User → POST /auth/login {email, password}
-       → verify password hash
-       → generate JWT (payload: user_id, email, exp)
-       → return {access_token, token_type: "bearer"}
-
-Protected Endpoint:
-  Client → Header: Authorization: Bearer <token>
-         → FastAPI dependency get_current_user()
-         → decode JWT → user_id
-         → inject user_id ke semua query DB
+Register → POST /auth/register → hash password (bcrypt) → INSERT users
+Login    → POST /auth/login    → verify hash → JWT token (8 jam)
+Protected endpoint → Authorization: Bearer <token> → get_current_user() dependency
 ```
 
-### 2.2 JWT Configuration
-
+### JWT
 ```python
-SECRET_KEY = os.getenv("JWT_SECRET_KEY")   # random 32-byte string
+SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8       # 8 jam
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 8
 ```
 
-### 2.3 FastAPI Auth Dependency
-
-```python
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError, jwt
-
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
-
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-        return {"user_id": user_id}
-    except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid token")
-```
-
-Semua endpoint yang membutuhkan auth menggunakan:
-```python
-current_user: dict = Depends(get_current_user)
-```
-Dan menyertakan `user_id = current_user["user_id"]` di setiap query DB.
-
-### 2.4 Password Hashing
-
-```python
-from passlib.context import CryptContext
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
-```
-
-### 2.5 Auth Router (`app/routers/auth.py`)
-
-```python
-POST /auth/register
-  Body: {email, password, full_name}
-  → validate email unique
-  → hash password
-  → INSERT users
-  → return {user_id, email, full_name}
-
-POST /auth/login
-  Body: OAuth2PasswordRequestForm (email as username, password)
-  → fetch user by email
-  → verify_password()
-  → create_access_token({"sub": user_id})
-  → return {access_token, token_type: "bearer"}
-```
+Semua endpoint yang membutuhkan data user menggunakan dependency `get_current_user()` dan menyertakan `user_id` di setiap query DB untuk isolasi data antar user.
 
 ---
 
-## 3. Component Design
+## 4. Feature Design
 
-### 3.1 Document Parser (`app/services/parser.py`)
+### 4.1 Generate Silabus (Wizard 6 Langkah)
 
-Bertanggung jawab mengekstrak teks mentah dari berbagai format file.
+State wizard disimpan di `st.session_state` dengan keys: `syl_step`, `syl_org_profile`, `syl_doc_ids`, `syl_course_type`, `syl_start_level`, `syl_tlos`, `syl_selected_tlos`, `syl_performances`, `syl_selected_perfs`, `syl_elos`, `syl_selected_elos`, `syl_final`.
 
-```python
-def parse_document(file_path: str, file_type: str) -> str:
-    """
-    Returns raw extracted text from the document.
-    Supported: pdf, pptx, docx, xlsx
-    """
-```
-
-| Format | Library | Strategi Ekstraksi |
+| Step | Endpoint | Deskripsi |
 |---|---|---|
-| PDF | PyMuPDF (`fitz`) | Iterasi per halaman, `page.get_text()` |
-| PPTX | python-pptx | Iterasi per slide, kumpulkan semua `shape.text` |
-| DOCX | python-docx | Iterasi per paragraph, `para.text` |
-| XLSX | openpyxl | Iterasi per sheet dan row, join cell values |
+| 1 | `POST /syllabus/analyze-org` atau `POST /syllabus/analyze-org-manual` | Upload dokumen profil atau input manual → AI hasilkan profil terstruktur |
+| 2 | — | User pilih tipe course & level awal (1–5) |
+| 3 | `POST /syllabus/generate-tlo` | AI generate TLO; user pilih yang relevan |
+| 4 | `POST /syllabus/generate-performance` | AI generate PCS; user pilih yang relevan |
+| 5 | `POST /syllabus/generate-elo` | AI generate ELO; user pilih yang relevan |
+| 6 | `POST /syllabus/finalize` | Simpan silabus ke DB; tampilkan & export |
 
-Setelah teks diekstrak, teks dipecah menjadi chunks dengan strategi:
-- Ukuran chunk: 500 token (~2000 karakter)
-- Overlap antar chunk: 50 token
-- Pemisah: paragraph break (`\n\n`) diutamakan
-
-### 3.2 Embedder (`app/services/embedder.py`)
-
-Mengubah teks chunk menjadi vector embedding menggunakan Azure OpenAI.
-
-```python
-def embed_text(text: str) -> List[float]:
-    """
-    Returns 1536-dimensional embedding vector.
-    Uses: corpu-text-embedding-3-large
-    """
-
-def embed_chunks(chunks: List[str]) -> List[List[float]]:
-    """Batch embed multiple chunks."""
-```
-
-Embedding disimpan ke tabel `document_chunks` kolom `embedding VECTOR(1536)`.
-
-### 3.3 Vector Search (`app/services/vector_search.py`)
-
-Melakukan similarity search menggunakan pgvector untuk RAG (Retrieval-Augmented Generation).
-
-```python
-def search_similar_chunks(
-    query: str,
-    top_k: int = 5,
-    document_ids: Optional[List[str]] = None
-) -> List[dict]:
-    """
-    Embeds query, then finds top_k most similar chunks.
-    Returns: [{"chunk_text": str, "similarity": float, "document_id": str}]
-    """
-```
-
-Query SQL yang digunakan (cosine similarity via pgvector):
-```sql
-SELECT chunk_text, document_id,
-       1 - (embedding <=> $1::vector) AS similarity
-FROM document_chunks
-WHERE document_id = ANY($2)
-ORDER BY embedding <=> $1::vector
-LIMIT $3;
-```
-
-### 3.4 AI Agent (`app/services/ai_agent.py`)
-
-Wrapper untuk Azure OpenAI GPT-4o chat completion. Setiap agent menggunakan system prompt yang berbeda.
-
-```python
-def call_llm(
-    system_prompt: str,
-    user_message: str,
-    context_chunks: List[str] = []
-) -> str:
-    """
-    Calls Azure OpenAI GPT-4o with RAG context injected.
-    Returns: raw text response from LLM.
-    """
-```
-
-Struktur pesan ke LLM:
-```
-[system]  → role + instruksi format output
-[user]    → "Context:\n{joined_chunks}\n\nTask:\n{user_message}"
-```
-
----
-
-## 3. AI Agent Design
-
-### Agent 1 — Syllabus Generator
-
-**Trigger:** User memilih topik + level, klik "Generate Syllabus"
-
-**RAG Sources:** `BUS-Profile_CorpU_Context.pdf`, `STD-Competency_Standards.docx`, `CAT-Training_Catalog.pptx`
-
-**System Prompt:**
-```
-Kamu adalah Learning Design Expert untuk Telkom Indonesia.
-Tugasmu adalah membuat draft silabus pelatihan yang terstruktur dan berjenjang.
-Silabus harus selaras dengan konteks bisnis Telkom dan standar kompetensi internal.
-
-Format output WAJIB dalam JSON array dengan struktur berikut:
-[
-  {
-    "level": "Beginner|Intermediate|Advanced|Mastery",
-    "topic": "nama topik utama",
-    "subtopics": ["subtopik 1", "subtopik 2"],
-    "learning_objectives": ["peserta mampu...", "peserta dapat..."],
-    "delivery_method": "Video|Workshop|Hands-on|Self-paced|Blended",
-    "duration_hours": <angka>
-  }
-]
-Hasilkan untuk SEMUA level dari Beginner hingga Mastery dengan kedalaman yang berbeda.
-```
-
-**User Message Template:**
-```
-Topik Pelatihan: {topic}
-Target Level: {level}
-
-Konteks Bisnis & Standar Kompetensi:
-{rag_context}
-
-Buatkan draft silabus berjenjang untuk topik ini.
-```
-
-**Output:** JSON → diparse → ditampilkan sebagai `st.dataframe()` di Streamlit
-
----
-
-### Agent 2 — Micro-Learning Decomposer
-
-**Trigger:** User memilih dokumen modul, klik "Decompose"
-
-**RAG Sources:** Dokumen modul yang dipilih + `GUIDE-Microlearning_Design.docx`
-
-**System Prompt:**
-```
-Kamu adalah Instructional Designer spesialis microlearning.
-Tugasmu adalah memecah modul pelatihan besar menjadi modul mikro yang mandiri.
-
-Setiap modul mikro harus:
-- Berdiri sendiri (standalone), tidak bergantung pada modul lain
-- Fokus pada SATU tujuan pembelajaran spesifik
-- Dapat diselesaikan dalam 5–15 menit
-
-Format output WAJIB dalam JSON array:
-[
-  {
-    "module_number": <int>,
-    "title": "judul modul mikro",
-    "specific_objective": "setelah menyelesaikan modul ini, peserta dapat...",
-    "content_summary": "ringkasan konten dalam 2-3 kalimat",
-    "delivery_format": "Video|Infographic|Quiz|Case Study|Simulation",
-    "duration_minutes": <5-15>
-  }
-]
-```
-
-**User Message Template:**
-```
-Konten Modul Pelatihan:
-{rag_context}
-
-Panduan Microlearning:
-{microlearning_guide_context}
-
-Pecah materi di atas menjadi modul mikro yang mandiri.
-```
-
-**Output:** JSON → `st.dataframe()` + download CSV
-
----
-
-### Agent 3 — Personalized Recommender
-
-**Trigger:** User menginput gap kompetensi + (opsional) upload gap assessment file
-
-**RAG Sources:** `micro_modules` table (vector search), `STD-Competency_Standards.docx`
-
-**System Prompt:**
-```
-Kamu adalah Learning Advisor untuk Telkom Indonesia.
-Tugasmu adalah merekomendasikan modul mikro yang paling relevan berdasarkan gap kompetensi peserta.
-
-Urutkan rekomendasi dari modul yang paling fundamental ke yang paling advanced.
-Jelaskan mengapa setiap modul relevan dengan gap yang ada.
-
-Format output WAJIB dalam JSON array:
-[
-  {
-    "rank": <int>,
-    "module_title": "judul modul mikro",
-    "relevance_reason": "alasan relevansi dengan gap peserta",
-    "priority": "High|Medium|Low",
-    "estimated_duration_minutes": <int>
-  }
-]
-```
-
-**User Message Template:**
-```
-Profil Peserta: {participant_name}
-Gap Kompetensi: {gap_description}
-
-Modul Mikro yang Tersedia:
-{similar_modules_context}
-
-Standar Kompetensi:
-{competency_standards_context}
-
-Rekomendasikan learning path yang paling relevan untuk peserta ini.
-```
-
-**Output:** JSON → `st.dataframe()` + total durasi estimasi
-
----
-
-## 4. FastAPI Endpoint Design
-
-### POST `/auth/register`
-```python
-# Request body:
-{"email": "user@telkom.co.id", "password": "...", "full_name": "..."}
-# Response:
-{"user_id": "uuid", "email": "...", "full_name": "..."}
-```
-
-### POST `/auth/login`
-```python
-# Request: OAuth2PasswordRequestForm (form-data: username=email, password)
-# Response:
-{"access_token": "eyJ...", "token_type": "bearer"}
-```
-
----
-
-### POST `/upload`
-```python
-# Auth: Bearer token required
-# Request: multipart/form-data
-# Body: files: List[UploadFile]
-# Response:
+**Output format silabus (JSONB):**
+```json
 {
-  "uploaded": [
-    {"document_id": "uuid", "filename": "...", "chunks_created": 12}
-  ]
+  "org_profile": { "organization_name", "industry", "vision", "mission", ... },
+  "course_type": "...",
+  "levels_covered": ["Level 1 — Intro", ...],
+  "current_condition": "...",
+  "desired_condition": "...",
+  "tlos": [{ "tlo_number", "tlo", "rationale" }],
+  "performance_objectives": [{ "perf_number", "related_tlo", "performance_objective", "condition", "standard" }],
+  "elos": [{ "elo_number", "related_performance", "elo", "bloom_level", "delivery_method", "duration_minutes" }]
 }
 ```
 
-Flow:
-1. `get_current_user()` → `user_id`
-2. Terima file → simpan sementara
-3. `parser.parse_document()` → raw text
-4. Chunking → list of strings
-5. `embedder.embed_chunks()` → list of vectors
-6. Simpan ke `documents` (dengan `user_id`) + `document_chunks`
-7. Return response
-
 ---
 
-### POST `/syllabus/generate`
-```python
-# Auth: Bearer token required
-# Request body:
-{
-  "topic": "Workflow Optimization",
-  "level": "Intermediate",
-  "document_ids": ["uuid1", "uuid2"]
-}
-# Response:
+### 4.2 Dekomposisi Modul Mikro
+
+**Sumber materi:** wajib dari silabus yang sudah dibuat (selectbox dari `/syllabi`).
+
+**Panduan microlearning:** user upload file (PDF/DOCX/PPTX/XLSX). File diupload ke `/upload` dan `document_id` di-cache di session state agar tidak re-upload setiap rerun.
+
+**Endpoint:** `POST /decompose-from-syllabus`
+```json
 {
   "syllabus_id": "uuid",
-  "result": [ ...syllabus JSON array... ]
-}
-```
-
-Flow:
-1. `get_current_user()` → `user_id`
-2. `vector_search.search_similar_chunks(topic, document_ids)` → context
-3. `ai_agent.call_llm(system_prompt, user_message)` → raw JSON string
-4. Parse JSON → validasi struktur
-5. Simpan ke tabel `syllabi` (dengan `user_id`)
-6. Return result
-
----
-
-### POST `/decompose`
-```python
-# Auth: Bearer token required
-# Request body:
-{
-  "document_id": "uuid",
   "guide_document_id": "uuid"
 }
-# Response:
-{
-  "modules": [ ...micro_modules JSON array... ]
-}
 ```
 
-Flow:
-1. `get_current_user()` → `user_id`
-2. Ambil semua chunks dari `document_id`
-3. Ambil chunks panduan dari `guide_document_id`
-4. `ai_agent.call_llm()` → JSON modul mikro
-5. Embed setiap modul mikro
-6. Simpan ke `micro_modules` (dengan `user_id`)
-7. Return result
+**Generate Quiz (opsional):**
+- Checkbox "Generate Soal Quiz?" hanya muncul di mode dari silabus
+- Radio: "Generate Pre-test & Post-test saja" | "Generate Quiz jadi 1 saja"
+- Input jumlah soal (1–50)
+- Caption dinamis menjelaskan jumlah soal yang akan digenerate
+- Endpoint: `POST /generate-quiz` → filter ELO dengan `delivery_method` mengandung "quiz"
+- Jika tidak ada ELO quiz → `has_quiz_elos: false` → tampilkan pesan info
+
+**Render hasil (`_render_decompose_result`):**
+1. Ringkasan metrik (total modul, total durasi)
+2. Daftar modul mikro
+3. Timeline (tab: Versi Singkat 2/minggu | Versi Lama 1/minggu)
+4. Soal Quiz (jika ada) — tab Pre-test/Post-test atau Quiz tunggal
+5. Export: DOCX, PDF, TXT — semua bagian dalam satu dokumen (Bagian 1: Silabus, Bagian 2: Modul Mikro, Bagian 3: Timeline, Bagian 4: Quiz)
 
 ---
 
-### POST `/recommend`
-```python
-# Auth: Bearer token required
-# Request body:
+### 4.3 Personalisasi User (Individual)
+
+**Endpoint:** `POST /recommend`
+
+**Request:**
+```json
 {
   "participant_name": "...",
   "gap_description": "...",
-  "top_k": 5
+  "top_k": 5,
+  "syllabus_id": "uuid (opsional)",
+  "jabatan": "opsional",
+  "lama_bekerja": "opsional",
+  "departemen": "opsional",
+  "pendidikan_terakhir": "opsional",
+  "preferensi_belajar": "opsional",
+  "waktu_belajar_per_minggu": "opsional"
 }
-# Response:
+```
+
+Field opsional profil dimasukkan ke dalam user message LLM untuk mempersonalisasi rekomendasi. Jika `syllabus_id` diberikan, AI menggunakan ELO dari silabus sebagai katalog modul.
+
+**Output per item:**
+```json
+{ "rank", "module_title", "relevance_reason", "priority", "estimated_duration_minutes" }
+```
+
+---
+
+### 4.4 Personalisasi Multi User (Bulk)
+
+**Endpoint:** `POST /bulk-recommend`
+
+**Flow:**
+1. User upload Excel → validasi kolom wajib (`nama`, `gap_kompetensi`)
+2. Preview tabel peserta
+3. Pilih silabus opsional + jumlah rekomendasi per peserta
+4. Klik Submit → backend generate `bulk_session_id` (UUID) untuk batch ini
+5. Loop per peserta: call LLM → parse response JSON `{ recommended_level, level_label, modules[] }`
+6. Simpan ke `recommendations` dengan `bulk_session_id` yang sama
+7. Return semua hasil + error per peserta
+
+**Level peserta** (1–5) ditentukan AI berdasarkan profil dan gap, disimpan di level peserta (bukan per modul).
+
+**Grouping di riwayat:** semua record dengan `bulk_session_id` yang sama ditampilkan sebagai satu group/batch.
+
+**Export per batch:** XLSX (sheet Ringkasan + sheet per peserta), DOCX, PDF.
+
+---
+
+### 4.5 Roadmap Karir
+
+**Endpoint:** `POST /career-roadmap`
+
+**Request:**
+```json
 {
-  "recommendation_id": "uuid",
-  "recommendations": [ ...recommendation JSON array... ]
+  "participant_name": "...",
+  "current_position": "...",
+  "target_position": "...",
+  "timeline_months": 12,
+  "additional_context": "opsional",
+  "syllabus_id": "opsional"
 }
 ```
 
-Flow:
-1. `get_current_user()` → `user_id`
-2. `vector_search.search_similar_chunks(gap_description)` pada `micro_modules` milik user
-3. Ambil standar kompetensi dari `STD-Competency_Standards.docx`
-4. `ai_agent.call_llm()` → JSON rekomendasi
-5. Simpan ke `recommendations` (dengan `user_id`)
-6. Return result
+**Output:** multi-phase roadmap, setiap phase berisi modul dengan urgency (Critical/Important/Nice-to-have).
 
 ---
 
-## 5. Streamlit UI Design
+### 4.6 Riwayat & Export
 
-### Session State untuk Auth
-```python
-# Streamlit session state keys:
-st.session_state["token"]      # JWT access token
-st.session_state["user_email"] # email user yang login
-st.session_state["logged_in"]  # bool
-```
+5 tab terpisah:
 
-Setiap kali app dimuat, cek `st.session_state["logged_in"]`. Jika `False`, tampilkan halaman Auth saja. Jika `True`, tampilkan sidebar navigasi penuh.
-
-### Navigasi
-Sidebar dengan 5 halaman menggunakan `st.sidebar.radio()`:
-
-```
-🔐 Login / Register   ← hanya tampil jika belum login
----
-📁 Upload Dokumen
-📋 Generate Silabus
-🔬 Dekomposisi Modul
-🎯 Rekomendasi Personal
-📥 Export & Riwayat
----
-👤 {user_email}  [Logout]
-```
-
-### Page 0 — Login / Register
-```
-st.title("🔐 AI Learning Assistant — Telkom")
-
-tab1, tab2 = st.tabs(["Login", "Register"])
-
-# Tab Login:
-  st.text_input("Email")
-  st.text_input("Password", type="password")
-  → Tombol "Login"
-  → POST /auth/login
-  → Simpan token ke st.session_state["token"]
-  → st.rerun() untuk refresh ke halaman utama
-
-# Tab Register:
-  st.text_input("Nama Lengkap")
-  st.text_input("Email")
-  st.text_input("Password", type="password")
-  st.text_input("Konfirmasi Password", type="password")
-  → Tombol "Daftar"
-  → POST /auth/register
-  → Auto-login setelah register berhasil
-```
-
-### Page 1 — Upload Dokumen
-```
-st.title("Upload Dokumen Referensi")
-st.file_uploader(accept_multiple_files=True, type=["pdf","pptx","docx","xlsx"])
-→ Tombol "Upload & Proses"
-→ Progress bar saat parsing + embedding
-→ Tabel daftar dokumen yang sudah diupload (dari GET /documents)
-```
-
-### Page 2 — Generate Silabus
-```
-st.title("Generate Draft Silabus")
-st.text_input("Topik Pelatihan")
-st.selectbox("Target Level", ["Beginner","Intermediate","Advanced","Mastery","All Levels"])
-st.multiselect("Dokumen Referensi", [list of uploaded docs])
-→ Tombol "Generate Silabus"
-→ st.spinner("AI sedang menyusun silabus...")
-→ st.dataframe(hasil silabus)
-→ st.download_button("Download CSV")
-```
-
-### Page 3 — Dekomposisi Modul
-```
-st.title("Dekomposisi Modul Mikro")
-st.selectbox("Pilih Modul Pelatihan", [list of uploaded docs])
-→ Tombol "Decompose"
-→ st.spinner("AI sedang memecah materi...")
-→ st.dataframe(daftar modul mikro)
-→ st.metric("Total Modul", n) + st.metric("Total Durasi", "X menit")
-→ st.download_button("Download CSV")
-```
-
-### Page 4 — Rekomendasi Personal
-```
-st.title("Rekomendasi Learning Path Personal")
-st.text_input("Nama Peserta")
-st.text_area("Deskripsi Gap Kompetensi")
-st.file_uploader("Upload Gap Assessment (opsional)", type=["pdf","xlsx"])
-→ Tombol "Generate Rekomendasi"
-→ st.spinner("AI sedang menganalisis gap...")
-→ st.dataframe(rekomendasi modul)
-→ st.download_button("Download CSV")
-```
-
-### Page 5 — Export & Riwayat
-```
-st.title("Riwayat & Export")
-→ Tabs: [Silabus] [Modul Mikro] [Rekomendasi]
-→ Setiap tab: tabel riwayat MILIK USER YANG LOGIN + tombol download per item
-→ Data difilter by user_id dari JWT token
-```
+| Tab | Konten |
+|---|---|
+| 📋 Silabus | Daftar silabus per expander, export TXT/DOCX/PDF |
+| 🔬 Modul Mikro | Dikelompokkan per dokumen sumber + tanggal |
+| 🎯 Personalisasi User | Daftar rekomendasi personal (tanpa `bulk_session_id`) |
+| 👥 Personalisasi Multi User | Dikelompokkan per `bulk_session_id` (batch), export XLSX/DOCX/PDF per batch |
+| 🗺️ Roadmap Karir | Daftar roadmap per expander, export TXT/DOCX/PDF |
 
 ---
 
-## 6. Data Flow Diagram
+## 5. AI Agent Design
 
-### Flow 1: Document Upload & Embedding
-```
-User uploads file
-      │
-      ▼
-FastAPI /upload
-      │
-      ├─► parser.parse_document()  ──► raw_text
-      │
-      ├─► chunk_text(raw_text)     ──► chunks[]
-      │
-      ├─► embedder.embed_chunks()  ──► vectors[]
-      │
-      └─► Supabase INSERT
-              documents (id, filename, content)
-              document_chunks (chunk_text, embedding)
-```
+### System Prompts
 
-### Flow 2: Syllabus Generation (RAG)
-```
-User: topic + level + doc_ids
-      │
-      ▼
-FastAPI /syllabus/generate
-      │
-      ├─► embed(topic)  ──► query_vector
-      │
-      ├─► pgvector similarity search  ──► top_k chunks (context)
-      │
-      ├─► build prompt (system + context + user_task)
-      │
-      ├─► Azure OpenAI GPT-4o  ──► JSON string
-      │
-      ├─► parse + validate JSON
-      │
-      └─► Supabase INSERT syllabi
-              │
-              ▼
-          Return to Streamlit → st.dataframe()
-```
+**Syllabus Org Analyzer:**
+Membaca dokumen profil perusahaan → output JSON: `organization_name`, `industry`, `vision`, `mission`, `strategic_priorities`, `core_competencies`, `learning_context`, `recommended_course_types`.
 
-### Flow 3: Micro-Module Decomposition
-```
-User: document_id
-      │
-      ▼
-FastAPI /decompose
-      │
-      ├─► fetch all chunks of document
-      │
-      ├─► fetch microlearning guide chunks
-      │
-      ├─► Azure OpenAI GPT-4o  ──► JSON micro_modules[]
-      │
-      ├─► embed each module title+objective
-      │
-      └─► Supabase INSERT micro_modules (with embeddings)
-              │
-              ▼
-          Return to Streamlit → st.dataframe()
-```
+**TLO Generator:**
+Input: profil org + tipe course + level range → output JSON array TLO dengan `tlo_number`, `tlo`, `rationale`.
 
-### Flow 4: Personalized Recommendation
-```
-User: participant_name + gap_description
-      │
-      ▼
-FastAPI /recommend
-      │
-      ├─► embed(gap_description)  ──► query_vector
-      │
-      ├─► pgvector search on micro_modules  ──► top_k relevant modules
-      │
-      ├─► fetch competency standards context
-      │
-      ├─► Azure OpenAI GPT-4o  ──► JSON recommendations[]
-      │
-      └─► Supabase INSERT recommendations
-              │
-              ▼
-          Return to Streamlit → st.dataframe()
-```
+**PCS Generator:**
+Input: TLO terpilih → output JSON array PCS dengan `perf_number`, `related_tlo`, `performance_objective`, `condition`, `standard`.
+
+**ELO Generator:**
+Input: PCS terpilih → output JSON array ELO dengan `elo_number`, `related_performance`, `elo`, `bloom_level`, `delivery_method`, `duration_minutes`.
+
+**Decomposer:**
+Input: ELO dari silabus + panduan microlearning → output JSON array modul mikro dengan `module_number`, `title`, `specific_objective`, `content_summary`, `delivery_format`, `duration_minutes`, `related_elo`.
+
+**Personal Recommender:**
+Input: profil peserta lengkap + gap + ELO silabus (opsional) → output JSON array rekomendasi.
+
+**Bulk Recommender:**
+Input: profil peserta + gap + ELO silabus (opsional) → output JSON object `{ recommended_level, level_label, modules[] }`.
+
+**Quiz Generator:**
+Input: ELO yang delivery_method-nya Quiz → output JSON array soal pilihan ganda dengan `nomor`, `elo_reference`, `pertanyaan`, `pilihan {A,B,C,D}`, `jawaban_benar`, `penjelasan`.
+
+**Career Roadmap:**
+Input: posisi awal, target, timeline → output JSON array phases dengan `phase_number`, `phase_name`, `month_range`, `focus`, `modules[]`.
 
 ---
 
-## 7. Key Implementation Details
+## 6. Export Design
 
-### Chunking Strategy
-```python
-def chunk_text(text: str, chunk_size: int = 2000, overlap: int = 200) -> List[str]:
-    """
-    Split text into overlapping chunks.
-    Prefer splitting on paragraph boundaries (\n\n).
-    """
-    paragraphs = text.split("\n\n")
-    chunks = []
-    current = ""
-    for para in paragraphs:
-        if len(current) + len(para) <= chunk_size:
-            current += para + "\n\n"
-        else:
-            if current:
-                chunks.append(current.strip())
-            current = current[-overlap:] + para + "\n\n"  # overlap
-    if current:
-        chunks.append(current.strip())
-    return chunks
-```
+Semua export menggunakan `streamlit_app/export_utils.py`.
 
-### JSON Output Validation
-Setiap response LLM divalidasi sebelum disimpan:
-```python
-import json
-from pydantic import BaseModel
+| Fungsi | Format | Konten |
+|---|---|---|
+| `combined_to_docx/pdf/text` | DOCX/PDF/TXT | Silabus + Modul Mikro + Timeline + Quiz (opsional) |
+| `syllabus_to_docx/pdf/text` | DOCX/PDF/TXT | Silabus saja |
+| `decompose_to_docx/pdf/text` | DOCX/PDF/TXT | Modul mikro + timeline |
+| `recommend_to_docx/pdf/text` | DOCX/PDF/TXT | Rekomendasi personal |
+| `bulk_recommend_to_xlsx/docx/pdf` | XLSX/DOCX/PDF | Hasil bulk (sheet ringkasan + per peserta) |
+| `roadmap_to_docx/pdf/text` | DOCX/PDF/TXT | Career roadmap |
+| `quiz_to_docx/pdf/xlsx` | DOCX/PDF/XLSX | Soal quiz (pre/post atau single) |
 
-class SyllabusItem(BaseModel):
-    level: str
-    topic: str
-    subtopics: List[str]
-    learning_objectives: List[str]
-    delivery_method: str
-    duration_hours: float
-
-def parse_llm_json(raw: str, model: type) -> List[dict]:
-    """Extract JSON from LLM response, validate with Pydantic model."""
-    # Strip markdown code fences if present
-    raw = raw.strip().removeprefix("```json").removesuffix("```").strip()
-    data = json.loads(raw)
-    return [model(**item).dict() for item in data]
-```
-
-### Error Handling
-- LLM JSON parse error → retry sekali dengan prompt "Return ONLY valid JSON, no explanation"
-- Embedding API error → exponential backoff, max 3 retries
-- File parse error → return partial text dengan warning ke user
+**Branding:** semua DOCX menyertakan logo Telkom di header; semua PDF menyertakan watermark logo Telkom semi-transparan diagonal.
 
 ---
 
-## 8. Supabase Setup Checklist
-
-```sql
--- 1. Enable pgvector
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- 2. Create all tables (lihat requirements.md section 8)
-
--- 3. Create index untuk vector search (performance)
-CREATE INDEX ON document_chunks
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
-
-CREATE INDEX ON micro_modules
-  USING ivfflat (embedding vector_cosine_ops)
-  WITH (lists = 100);
-```
-
----
-
-## 9. File: `app/services/ai_agent.py` (Skeleton)
+## 7. Database Models (SQLAlchemy)
 
 ```python
-import os
-from openai import AzureOpenAI
-from typing import List
-
-client = AzureOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-)
-
-def call_llm(system_prompt: str, user_message: str, context_chunks: List[str] = []) -> str:
-    context = "\n\n---\n\n".join(context_chunks)
-    full_user_msg = f"Context:\n{context}\n\nTask:\n{user_message}" if context else user_message
-
-    response = client.chat.completions.create(
-        model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": full_user_msg},
-        ],
-        temperature=0.3,
-        max_tokens=4096,
-    )
-    return response.choices[0].message.content
+class User:          id, email, hashed_password, full_name, created_at
+class Document:      id, user_id, filename, file_type, content, uploaded_at
+class DocumentChunk: id, document_id, chunk_text, embedding(Vector 3072), chunk_index
+class Syllabus:      id, user_id, topic, level, output_json(JSONB), created_at
+class MicroModule:   id, user_id, source_document_id, title, objective, summary,
+                     delivery_format, duration_minutes, embedding(Vector 3072), created_at
+class Recommendation: id, user_id, participant_name, gap_input,
+                      recommended_modules(JSONB), bulk_session_id, created_at
 ```
+
+`bulk_session_id` pada `Recommendation`:
+- `NULL` → rekomendasi personal (FR-03) atau roadmap karir
+- non-`NULL` → bagian dari batch bulk (FR-04), semua record dalam satu batch berbagi UUID yang sama
 
 ---
 
-## 10. File: `app/services/embedder.py` (Skeleton)
+## 8. Key Implementation Details
 
+### Upload & Cache Pattern (Dekomposisi)
+File panduan microlearning di-cache di session state untuk menghindari re-upload setiap Streamlit rerun:
 ```python
-import os
-from openai import AzureOpenAI
-from typing import List
-
-client = AzureOpenAI(
-    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-)
-
-def embed_text(text: str) -> List[float]:
-    response = client.embeddings.create(
-        input=text,
-        model=os.getenv("AZURE_OPENAI_EMBEDDING_DEPLOYMENT"),
-    )
-    return response.data[0].embedding
-
-def embed_chunks(chunks: List[str]) -> List[List[float]]:
-    return [embed_text(chunk) for chunk in chunks]
+if st.session_state.get("decompose_guide_filename") != guide_file.name:
+    guide_id = _upload_and_get_id(guide_file, token)
+    st.session_state["decompose_guide_id"] = guide_id
+    st.session_state["decompose_guide_filename"] = guide_file.name
+else:
+    guide_id = st.session_state.get("decompose_guide_id")
 ```
+
+### LLM JSON Parsing
+```python
+def parse_llm_json(raw: str, model: Type[BaseModel]) -> List[dict]:
+    # Strip markdown code fences
+    # json.loads() → validate each item with Pydantic
+    # Retry once with stricter prompt if parsing fails
+```
+
+Bulk recommender menggunakan format JSON object (bukan array) untuk memisahkan level peserta dari modul:
+```json
+{ "recommended_level": 2, "level_label": "Beginner", "modules": [...] }
+```
+
+### Table Display
+Semua `st.dataframe()` menggunakan fungsi `show_table()` yang menambahkan kolom "nomor" mulai dari 1 (bukan indeks 0-based default Streamlit).
+
+### Button Convention
+Semua button eksekusi utama (generate/submit) menggunakan label `"Submit"` dengan `type="primary"`. Pengecualian: button wizard silabus (Generate TLO →, Generate PCS →, dll.) menggunakan label deskriptif karena merupakan bagian dari flow multi-step.
 
 ---
 

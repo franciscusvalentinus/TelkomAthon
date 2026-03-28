@@ -94,8 +94,12 @@ CREATE TABLE IF NOT EXISTS recommendations (
     participant_name TEXT,
     gap_input TEXT,
     recommended_modules JSONB,
+    bulk_session_id TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- 7b. Add bulk_session_id to existing recommendations table (idempotent)
+ALTER TABLE recommendations ADD COLUMN IF NOT EXISTS bulk_session_id TEXT;
 
 -- 8. Vector indexes skipped — Supabase pgvector limits indexes to <=2000 dims.
 -- Cosine similarity queries work via sequential scan (sufficient for this scale).

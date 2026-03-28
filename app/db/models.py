@@ -71,4 +71,5 @@ class Recommendation(Base):
     participant_name = Column(String)
     gap_input = Column(Text)
     recommended_modules = Column(JSONB)
+    bulk_session_id = Column(String, nullable=True)  # groups bulk generate results
     created_at = Column(DateTime, default=datetime.utcnow)

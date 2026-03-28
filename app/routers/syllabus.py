@@ -71,14 +71,24 @@ Format output WAJIB dalam JSON dengan struktur:
     raw = call_llm(system_prompt, "Analisis dokumen profil perusahaan berikut. Fokuskan pada perusahaan yang namanya mengandung 'PT' sebagai subjek utama, bukan lembaga penyelenggara atau mitra. Buat ringkasan terstruktur.", context_texts)
 
     import json, re
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
-        cleaned = re.sub(r"\n?```$", "", cleaned)
+
+    def _parse_json(text: str):
+        cleaned = text.strip()
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+        return json.loads(cleaned.strip())
+
     try:
-        result = json.loads(cleaned)
+        result = _parse_json(raw)
     except Exception:
-        raise HTTPException(status_code=422, detail=f"Gagal memparse respons AI: {raw[:300]}")
+        retry_raw = call_llm(
+            "You are a JSON formatter. Return ONLY valid JSON object, no explanation, no markdown.",
+            f"Fix this and return only the valid JSON object:\n{raw}"
+        )
+        try:
+            result = _parse_json(retry_raw)
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"Gagal memparse respons AI: {raw[:300]}")
 
     return {"org_profile": result}
 
@@ -122,14 +132,27 @@ Catatan: Tandai bahwa profil ini dibuat berdasarkan inferensi industri, bukan do
     raw = call_llm(system_prompt, user_message)
 
     import json, re
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-z]*\n?", "", cleaned)
-        cleaned = re.sub(r"\n?```$", "", cleaned)
+
+    def _parse_json(text: str):
+        cleaned = text.strip()
+        # Strip markdown code fences (```json ... ``` or ``` ... ```)
+        cleaned = re.sub(r"^```[a-zA-Z]*\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+        cleaned = cleaned.strip()
+        return json.loads(cleaned)
+
     try:
-        result = json.loads(cleaned)
+        result = _parse_json(raw)
     except Exception:
-        raise HTTPException(status_code=422, detail=f"Gagal memparse respons AI: {raw[:300]}")
+        # Retry: ask LLM to return only valid JSON
+        retry_raw = call_llm(
+            "You are a JSON formatter. Return ONLY valid JSON object, no explanation, no markdown.",
+            f"Fix this and return only the valid JSON object:\n{raw}"
+        )
+        try:
+            result = _parse_json(retry_raw)
+        except Exception:
+            raise HTTPException(status_code=422, detail=f"Gagal memparse respons AI: {raw[:300]}")
 
     return {"org_profile": result}
 
@@ -234,7 +257,7 @@ Pastikan ada TLO yang mencerminkan setiap level: {levels_desc}."""
     return {"tlos": items}
 
 
-# ── Step 3: Generate Performance Objectives ───────────────────────────────────
+# ── Step 3: Generate PCS ───────────────────────────────────
 
 class GeneratePerfRequest(BaseModel):
     selected_tlos: List[dict]
@@ -257,7 +280,7 @@ def generate_performance(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Generate Performance Objectives based on selected TLOs."""
+    """Generate PCS based on selected TLOs."""
     tlo_text = "\n".join(f"- TLO {t['tlo_number']}: {t['tlo']}" for t in req.selected_tlos)
 
     # Ekstrak topik dari TLO untuk query RAG yang lebih relevan
@@ -273,15 +296,15 @@ def generate_performance(
     levels_desc = levels_description(req.start_level)
 
     system_prompt = f"""Kamu adalah Instructional Designer.
-Tugasmu adalah membuat Performance Objectives berdasarkan TLO yang diberikan.
+Tugasmu adalah membuat PCS berdasarkan TLO yang diberikan.
 
 LEVEL YANG DICAKUP: {levels_desc}
 
-PENTING: Performance Objectives HARUS spesifik dan berkaitan langsung dengan konten yang ada di TLO.
+PENTING: PCS HARUS spesifik dan berkaitan langsung dengan konten yang ada di TLO.
 Setiap PO harus mencerminkan tingkat kesulitan yang sesuai dengan levelnya — dari {LEVEL_MAP[req.start_level]} hingga Mastery.
-Jangan membuat Performance Objective yang generik.
+Jangan membuat PCS yang generik.
 
-Performance Objective harus memiliki tiga komponen:
+PCS harus memiliki tiga komponen:
 - Perilaku (Behavior): tindakan spesifik yang dapat diamati
 - Kondisi (Condition): situasi/sumber daya yang diberikan
 - Standar (Standard): kriteria keberhasilan yang terukur
@@ -296,19 +319,19 @@ Format output WAJIB dalam JSON array:
     "standard": "dengan [kriteria terukur yang spesifik]"
   }}
 ]
-Hasilkan 2-3 Performance Objective per TLO. Pastikan ada variasi tingkat kesulitan sesuai level: {levels_desc}."""
+Hasilkan 2-3 PCS per TLO. Pastikan ada variasi tingkat kesulitan sesuai level: {levels_desc}."""
 
     user_message = (
         f"TLO yang dipilih (jadikan dasar konten PO):\n{tlo_text}\n\n"
         f"Konteks Perusahaan: {req.org_profile.get('organization_name', '')} — {req.org_profile.get('industry', '')}\n\n"
-        f"Buatkan Performance Objectives yang SPESIFIK sesuai konten setiap TLO di atas."
+        f"Buatkan PCS yang SPESIFIK sesuai konten setiap TLO di atas."
     )
     raw = call_llm(system_prompt, user_message, context_texts)
 
     try:
         items = parse_llm_json(raw, PerfItem)
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Gagal memparse Performance Objectives: {str(e)}")
+        raise HTTPException(status_code=422, detail=f"Gagal memparse PCS: {str(e)}")
 
     return {"performance_objectives": items}
 
@@ -338,9 +361,9 @@ def generate_elo(
     db: Session = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """Generate Enabling Learning Objectives based on selected TLOs and Performance Objectives."""
+    """Generate Enabling Learning Objectives based on selected TLOs and PCS."""
     tlo_text = "\n".join(f"- {t['tlo']}" for t in req.selected_tlos)
-    perf_text = "\n".join(f"- PO {p['perf_number']}: {p['performance_objective']}" for p in req.selected_performances)
+    perf_text = "\n".join(f"- PCS {p['perf_number']}: {p['performance_objective']}" for p in req.selected_performances)
 
     chunks = search_similar_chunks(
         f"profil bisnis strategi {req.org_profile.get('industry', '')}",
@@ -351,11 +374,11 @@ def generate_elo(
     levels_desc = levels_description(req.start_level)
 
     system_prompt = f"""Kamu adalah Instructional Designer spesialis kurikulum.
-Tugasmu adalah membuat Enabling Learning Objectives (ELO) yang mendukung pencapaian Performance Objectives.
+Tugasmu adalah membuat Enabling Learning Objectives (ELO) yang mendukung pencapaian PCS.
 
 LEVEL YANG DICAKUP: {levels_desc}
 
-PENTING: ELO HARUS spesifik dan berkaitan langsung dengan konten Performance Objective yang diberikan.
+PENTING: ELO HARUS spesifik dan berkaitan langsung dengan konten PCS yang diberikan.
 ELO adalah unit pembelajaran terkecil — fokus pada satu pengetahuan atau keterampilan spesifik.
 Gunakan kata kerja Bloom's Taxonomy yang sesuai dengan level masing-masing:
 - {LEVEL_MAP[1]}/Intro: Remember, Understand
@@ -368,20 +391,20 @@ Format output WAJIB dalam JSON array:
 [
   {{
     "elo_number": 1,
-    "related_performance": "PO 1",
+    "related_performance": "PCS 1",
     "elo": "Peserta dapat [kata kerja Bloom sesuai level] [konten spesifik sesuai topik PO]",
     "bloom_level": "Remember|Understand|Apply|Analyze|Evaluate|Create",
     "delivery_method": "Video|Reading|Quiz|Case Study|Role Play|Simulation|Workshop|Hands-on Lab",
     "duration_minutes": 15
   }}
 ]
-Hasilkan 2-4 ELO per Performance Objective. Pastikan ada variasi Bloom level sesuai level: {levels_desc}."""
+Hasilkan 2-4 ELO per PCS. Pastikan ada variasi Bloom level sesuai level: {levels_desc}."""
 
     user_message = (
         f"TLO (konteks program):\n{tlo_text}\n\n"
-        f"Performance Objectives (jadikan dasar konten ELO):\n{perf_text}\n\n"
+        f"PCS (jadikan dasar konten ELO):\n{perf_text}\n\n"
         f"Konteks Perusahaan: {req.org_profile.get('organization_name', '')} — {req.org_profile.get('industry', '')}\n\n"
-        f"Buatkan ELO yang SPESIFIK untuk setiap Performance Objective di atas. "
+        f"Buatkan ELO yang SPESIFIK untuk setiap PCS di atas. "
         f"Pastikan konten ELO mencerminkan sub-topik nyata yang perlu dipelajari."
     )
     raw = call_llm(system_prompt, user_message, context_texts)

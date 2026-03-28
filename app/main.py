@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 from app.db.database import get_db
 from app.db.models import Syllabus, MicroModule, Recommendation, Document
 from app.routers.auth import get_current_user
-from app.routers import auth, upload, syllabus, decompose, recommend
+from app.routers import auth, upload, syllabus, decompose, recommend, career_roadmap, bulk_recommend, quiz
 
 app = FastAPI(
     title="AI-Powered Curriculum Design & Micro-Learning Assistant",
@@ -33,6 +33,9 @@ app.include_router(upload.router)
 app.include_router(syllabus.router)
 app.include_router(decompose.router)
 app.include_router(recommend.router)
+app.include_router(bulk_recommend.router)
+app.include_router(quiz.router)
+app.include_router(career_roadmap.router)
 
 
 @app.get("/")
@@ -85,18 +88,49 @@ def get_history(
             ],
         })
 
+    # Split recommendations: roadmap / bulk / personal
+    personal_recs = []
+    roadmap_recs = []
+    bulk_recs = []
+    for r in recs:
+        entry = {
+            "id": str(r.id), "participant_name": r.participant_name,
+            "gap_input": r.gap_input, "recommended_modules": r.recommended_modules,
+            "bulk_session_id": r.bulk_session_id,
+            "created_at": r.created_at,
+        }
+        if r.gap_input and r.gap_input.startswith("Career:"):
+            roadmap_recs.append(entry)
+        elif r.bulk_session_id:
+            bulk_recs.append(entry)
+        else:
+            personal_recs.append(entry)
+
+    # Group bulk recs by session
+    from collections import defaultdict
+    bulk_sessions: dict = defaultdict(list)
+    for r in bulk_recs:
+        bulk_sessions[r["bulk_session_id"]].append(r)
+
+    bulk_groups = []
+    for session_id, members in bulk_sessions.items():
+        members_sorted = sorted(members, key=lambda x: x["created_at"])
+        bulk_groups.append({
+            "bulk_session_id": session_id,
+            "date": members_sorted[0]["created_at"].strftime("%Y-%m-%d %H:%M") if members_sorted[0]["created_at"] else "-",
+            "total_participants": len(members_sorted),
+            "participants": members_sorted,
+        })
+    # Sort groups newest first
+    bulk_groups.sort(key=lambda x: x["date"], reverse=True)
+
     return {
         "syllabi": [
             {"id": str(s.id), "topic": s.topic, "level": s.level, "output_json": s.output_json, "created_at": s.created_at}
             for s in syllabi
         ],
         "micro_module_groups": micro_module_groups,
-        "recommendations": [
-            {
-                "id": str(r.id), "participant_name": r.participant_name,
-                "gap_input": r.gap_input, "recommended_modules": r.recommended_modules,
-                "created_at": r.created_at,
-            }
-            for r in recs
-        ],
+        "recommendations": personal_recs,
+        "bulk_groups": bulk_groups,
+        "roadmaps": roadmap_recs,
     }
