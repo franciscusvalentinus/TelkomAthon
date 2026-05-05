@@ -9,3 +9,7 @@ dist/
 build/
 .venv/
 venv/
+
+# Streamlit secrets (contains credentials)
+streamlit_app/.streamlit/secrets.toml
+.streamlit/secrets.toml
